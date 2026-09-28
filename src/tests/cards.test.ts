@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { blankCustomCardDraft, mergeCards, parseCustomCard } from "../lib/cards/custom";
+import type { AuditMiss } from "../lib/cards/engine";
 import { routeExpense, walletAudit } from "../lib/cards/engine";
+import { explainMisses } from "../lib/cards/explain";
 import type { CardSpec, MonthlyLedger } from "../lib/cards/types";
 import { CARDS } from "../lib/data/cards";
+import { ultraModel } from "../lib/nebius";
 
 const MONTH = "2025-03";
 
@@ -289,5 +293,242 @@ describe("CARDS dataset smoke test", () => {
         recs[i]?.rewardValueSgd ?? 0,
       );
     }
+  });
+});
+
+describe("parseCustomCard", () => {
+  const validInput = {
+    name: "  My Grocery Card ",
+    rewardType: "cashback",
+    baseRate: 0.01,
+    earnStructure: [
+      { category: "groceries", rate: 0.2, capMonthlySgd: 600 },
+      { category: "dining", rate: 0.05 },
+    ],
+    minMonthlySpendSgd: 0,
+    annualFeeSgd: 0,
+  };
+
+  it("accepts a valid input, trims and slugs the name, defaults the issuer and forces the sourceNote", () => {
+    const result = parseCustomCard(validInput);
+    if (!result.ok) {
+      throw new Error(`expected the valid fixture to parse, got ${result.errors.join(" | ")}`);
+    }
+
+    expect(result.card.id).toBe("my-grocery-card");
+    expect(result.card.name).toBe("My Grocery Card");
+    expect(result.card.issuer).toBe("Personal"); // issuer was omitted
+    expect(result.card.rewardType).toBe("cashback");
+    expect(result.card.baseRate).toBe(0.01);
+    expect(result.card.earnStructure).toHaveLength(2);
+    expect(result.card.earnStructure[0]).toMatchObject({
+      category: "groceries",
+      rate: 0.2,
+      capMonthlySgd: 600,
+    });
+    expect(result.card.milesPerDollar).toBeUndefined();
+    expect(result.card.annualFeeSgd).toBe(0);
+    expect(result.card.sourceNote).toBe(
+      "User-entered terms. Not verified against any issuer.",
+    );
+  });
+
+  it("ignores a caller supplied sourceNote and still forces the disclaimer", () => {
+    const result = parseCustomCard({ ...validInput, name: "Tampered", sourceNote: "Verified by UOB." });
+    if (!result.ok) {
+      throw new Error(result.errors.join(" | "));
+    }
+    expect(result.card.sourceNote).toBe("User-entered terms. Not verified against any issuer.");
+  });
+
+  it("rejects a negative tier rate with a human-readable error naming the field", () => {
+    const result = parseCustomCard({
+      ...validInput,
+      earnStructure: [{ category: "groceries", rate: -0.01 }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const joined = result.errors.join(" | ");
+      expect(joined).toContain("earnStructure.0.rate");
+      expect(joined).toMatch(/between 0 and 0\.2/);
+    }
+  });
+
+  it("rejects a miles card entered without milesPerDollar", () => {
+    const result = parseCustomCard({ ...validInput, rewardType: "miles" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.join(" | ")).toContain("milesPerDollar is required");
+    }
+  });
+
+  it("rejects duplicate tier categories with an error naming the repeated category", () => {
+    const result = parseCustomCard({
+      ...validInput,
+      earnStructure: [
+        { category: "dining", rate: 0.05 },
+        { category: "dining", rate: 0.03 },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const joined = result.errors.join(" | ");
+      expect(joined).toContain("dining");
+      expect(joined).toMatch(/different category/);
+      for (const error of result.errors) {
+        expect(error.trim().length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("ships blank form defaults that parse cleanly once a name is filled in", () => {
+    const draft = blankCustomCardDraft();
+    expect(draft.rewardType).toBe("cashback");
+    expect(draft.earnStructure).toEqual([]);
+
+    const named = parseCustomCard({ ...draft, name: "Blank Draft Card" });
+    if (!named.ok) {
+      throw new Error(named.errors.join(" | "));
+    }
+    expect(named.card.issuer).toBe("Personal");
+    expect(named.card.baseRate).toBe(0.01);
+    expect(named.card.minMonthlySpendSgd).toBeUndefined();
+  });
+});
+
+describe("mergeCards", () => {
+  const build = (name: string): CardSpec => {
+    const parsed = parseCustomCard({
+      name,
+      rewardType: "cashback",
+      baseRate: 0.005,
+      earnStructure: [],
+      annualFeeSgd: 0,
+    });
+    if (!parsed.ok) {
+      throw new Error(parsed.errors.join(" | "));
+    }
+    return parsed.card;
+  };
+
+  it("appends custom cards after the built-ins in order and suffixes a colliding id with -2", () => {
+    const colliding = build("UOB One"); // slugs to the built-in id uob-one
+    const plain = build("Plain Custom");
+
+    const merged = mergeCards(CARDS, [colliding, plain]);
+
+    expect(merged).toHaveLength(CARDS.length + 2);
+    expect(merged.slice(0, CARDS.length)).toEqual(CARDS); // built-ins untouched and first
+    expect(merged[CARDS.length]?.id).toBe("uob-one-2");
+    expect(merged[CARDS.length]?.name).toBe("UOB One");
+    expect(merged[CARDS.length + 1]?.id).toBe("plain-custom");
+
+    const ids = merged.map((card) => card.id);
+    expect(new Set(ids).size).toBe(ids.length); // no duplicates anywhere
+    expect(CARDS.map((card) => card.id)).not.toContain("uob-one-2"); // inputs not mutated
+  });
+
+  it("routes a groceries purchase to the custom card when its tier beats the whole merged deck", () => {
+    const parsed = parseCustomCard({
+      name: "My Grocery Card",
+      rewardType: "cashback",
+      baseRate: 0.003,
+      earnStructure: [{ category: "groceries", rate: 0.2 }],
+      annualFeeSgd: 0,
+    });
+    if (!parsed.ok) {
+      throw new Error(parsed.errors.join(" | "));
+    }
+
+    const deck = mergeCards(CARDS, [parsed.card]);
+    const recs = routeExpense(
+      deck,
+      { amountSgd: 300, category: "groceries" },
+      { monthKey: MONTH, entries: [] },
+    );
+
+    expect(recs).toHaveLength(CARDS.length + 1);
+    expect(recs[0]?.cardId).toBe("my-grocery-card"); // 20% of 300 = S$60.00, ahead of every built-in
+    expect(recs[0]?.rewardValueSgd).toBeCloseTo(60.0, 2);
+    expect(recs[0]?.conditional).toBe(false);
+  });
+});
+
+describe("explainMisses", () => {
+  const misses: AuditMiss[] = [
+    {
+      index: 0,
+      usedCardId: "uob-one",
+      bestCardId: "hsbc-live-plus",
+      lostSgd: 7.0,
+      why:
+        "S$100.00 on dining: UOB One Card earned S$1.00 (used card paid base rate with no bonus tier for this category); best card hsbc-live-plus would have earned S$8.00",
+    },
+    {
+      index: 1,
+      usedCardId: "dbs-live-fresh",
+      bestCardId: "hsbc-live-plus",
+      lostSgd: 3.0,
+      why:
+        "S$50.00 on dining: DBS Live Fresh Card earned S$1.50 (used card paid base rate with no bonus tier for this category); best card hsbc-live-plus would have earned S$4.50",
+    },
+  ];
+  const context = {
+    monthKey: MONTH,
+    cardNames: {
+      "uob-one": "UOB One Card",
+      "dbs-live-fresh": "DBS Live Fresh Card",
+      "hsbc-live-plus": "HSBC Live+ Card",
+    },
+  };
+
+  it("returns the deterministic engine with null explanations when the model path yields nothing", async () => {
+    const result = await explainMisses(misses, context, async () => null);
+    expect(result.engine).toBe("deterministic");
+    expect(result.explanations).toBeNull();
+  });
+
+  it("returns ultra with exactly one explanation per miss when the reply is well formed", async () => {
+    const calls: Array<{ system: string; user: string; model: string }> = [];
+    const result = await explainMisses(misses, context, async (system, user, model) => {
+      calls.push({ system, user, model });
+      return {
+        explanations: [
+          "You spent S$100.00 on dining on the UOB One Card, which has no dining bonus tier, so it paid S$1.00 while the HSBC Live+ Card would have paid S$8.00, costing you S$7.00.",
+          "You spent S$50.00 on dining on the DBS Live Fresh Card, which has no dining bonus tier, so it paid S$1.50 while the HSBC Live+ Card would have paid S$4.50, costing you S$3.00.",
+        ],
+      };
+    });
+
+    expect(result.engine).toBe("ultra");
+    expect(result.explanations).toHaveLength(misses.length);
+    const explanations = result.explanations ?? [];
+    expect(explanations[0]).toContain("S$7.00"); // figures copied verbatim from the misses
+    expect(explanations[1]).toContain("S$3.00");
+    for (const explanation of explanations) {
+      expect(explanation.trim().length).toBeGreaterThan(0);
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.model).toBe(ultraModel());
+    expect(calls[0]?.system).toContain("explanations");
+    expect(calls[0]?.user).toContain('"monthKey":"2025-03"');
+    expect(calls[0]?.user).toContain("HSBC Live+ Card");
+  });
+
+  it("falls back to deterministic when the reply has the wrong length, bad shape, or the fetcher throws", async () => {
+    const tooFew = await explainMisses(misses, context, async () => ({
+      explanations: ["only one explanation for two misses"],
+    }));
+    expect(tooFew).toEqual({ engine: "deterministic", explanations: null });
+
+    const badShape = await explainMisses(misses, context, async () => ({ notes: [] }));
+    expect(badShape).toEqual({ engine: "deterministic", explanations: null });
+
+    const threw = await explainMisses(misses, context, async () => {
+      throw new Error("network down");
+    });
+    expect(threw).toEqual({ engine: "deterministic", explanations: null });
   });
 });

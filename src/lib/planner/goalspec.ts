@@ -23,6 +23,8 @@ export const PLANNER_DEFAULTS = {
   renovationBufferSgd: 30_000,
   /** Savings instrument rate when the prompt states none: 1.8 percent a year. */
   instrumentRatePa: 0.018,
+  /** Investment portfolio growth when the profile states none: 4.5 percent a year. */
+  investmentRatePa: 0.045,
 } as const;
 
 /**
@@ -80,6 +82,10 @@ export const userProfileSchema = z.object({
   liquidSavings: z.number(),
   cpfOaBalance: z.number(),
   milesValuationCents: z.number().default(1.8),
+  /** Existing investment portfolio value; absent means 0 and behaves exactly like today. */
+  investmentsSgd: z.number().optional(),
+  /** Portfolio growth rate; when unstated the planner assumes the default and shows a chip. */
+  investmentRatePa: z.number().optional(),
 });
 export type UserProfile = z.infer<typeof userProfileSchema>;
 

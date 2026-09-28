@@ -2,11 +2,13 @@
  * POST /api/plan: the only server endpoint in SpendWise.
  *
  * Takes { prompt, profile }, runs the planner pipeline
- * parseGoal -> missingFields -> fillAssumptions -> buildPlan and returns
- * { plan, goalSpec, parser }. The LLM (Nemotron on Nebius Token Factory) is
- * used only to parse the prompt into a GoalSpec; every number in the returned
- * plan comes from the deterministic kernels in src/lib/kernels. Invalid input
- * returns 400 with a message that says what a usable request looks like.
+ * parseGoal -> missingFields -> fillAssumptions -> buildPlan -> enrichPlanNarrative
+ * and returns { plan, goalSpec, parser }. The LLM (Nemotron on Nebius Token
+ * Factory) parses the prompt into a GoalSpec and may reword the plan narrative;
+ * every number in the returned plan comes from the deterministic kernels in
+ * src/lib/kernels, and with no API key the whole pipeline stays offline with
+ * narrativeEngine 'deterministic'. Invalid input returns 400 with a message
+ * that says what a usable request looks like.
  *
  * `missingFields` is returned as an additive fourth field so clients can see
  * which GoalSpec fields the prompt left unstated before assumptions filled
@@ -28,6 +30,7 @@ import {
   parseGoal,
   parseGoalFallback,
 } from '../../../lib/planner/parse';
+import { enrichPlanNarrative } from '../../../lib/planner/narrative';
 
 export type PlanParser = 'nemotron' | 'local-fallback';
 
@@ -112,10 +115,13 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     // The full deterministic pipeline: what is missing, what gets assumed,
-    // and the plan itself. All three are pure functions.
+    // and the plan itself. The first four are pure functions; the narrative
+    // pass may reword the deterministic copy with the ultra model and always
+    // degrades to the deterministic text when Nebius is unconfigured.
     const missing = missingFields(goal, profile);
     const assumptions = fillAssumptions(goal, profile);
-    const plan = buildPlan(goal, profile, assumptions);
+    const deterministicPlan = buildPlan(goal, profile, assumptions);
+    const plan = await enrichPlanNarrative(deterministicPlan);
     const parser = detectParser(prompt.trim(), profile, goal);
 
     return NextResponse.json({ plan, goalSpec: goal, parser, missingFields: missing });

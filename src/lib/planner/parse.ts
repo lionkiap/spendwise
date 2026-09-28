@@ -249,13 +249,18 @@ export function parseGoalFallback(prompt: string, profile: UserProfile): GoalSpe
 }
 
 /**
- * Fields the plan still needs, as GoalSpec field names. A deadline at or
- * before the current age counts as missing; the optional instrumentRatePa is
- * reported too because the plan needs a rate and an assumption would fill it.
+ * Fields the plan still needs, as GoalSpec field names (plus investmentRatePa,
+ * a profile field, when a portfolio exists but its growth rate is unstated).
+ * A deadline at or before the current age counts as missing; the optional
+ * instrumentRatePa is reported too because the plan needs a rate and an
+ * assumption would fill it.
  */
 export function missingFields(goal: GoalSpec, profile: UserProfile): string[] {
   const missing: string[] = [];
   const deadlineMissing = !Number.isFinite(goal.deadlineAge) || goal.deadlineAge <= profile.age;
+  if ((profile.investmentsSgd ?? 0) > 0 && profile.investmentRatePa === undefined) {
+    missing.push('investmentRatePa');
+  }
   if (goal.kind === 'savings_target') {
     if (!(goal.targetAmountSgd > 0)) {
       missing.push('targetAmountSgd');
@@ -309,6 +314,14 @@ export function fillAssumptions(goal: GoalSpec, profile: UserProfile): Assumptio
       field: 'deadlineAge',
       value: profile.age + 5,
       reason: 'No deadline was stated so the plan assumes 5 years from today.',
+    });
+  }
+
+  if (missing.has('investmentRatePa')) {
+    assumptions.push({
+      field: 'investmentRatePa',
+      value: PLANNER_DEFAULTS.investmentRatePa,
+      reason: 'No investment growth rate was stated so the portfolio is assumed to grow at 4.5 percent a year.',
     });
   }
 

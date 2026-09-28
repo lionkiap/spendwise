@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { bsd, downPaymentSplit, fvAnnuity, fvLump, legalFeesEstimate, oaProjection, pmtForFv } from '../lib/kernels';
 import { chatJson, isConfigured } from '../lib/nebius';
 import { buildPlan } from '../lib/planner/build';
-import type { GoalSpec, UserProfile } from '../lib/planner/goalspec';
+import { PLANNER_DEFAULTS, type GoalSpec, type UserProfile } from '../lib/planner/goalspec';
+import { enrichPlanNarrative } from '../lib/planner/narrative';
 import {
   fillAssumptions,
   missingFields,
@@ -289,5 +290,170 @@ describe('buildPlan for savings and car goals', () => {
       Math.max(pmtForFv(40_000, baseProfile.liquidSavings, 0.018, 60), 0)
     );
     expect(plan.verdict.reasoning).toContain('CPF cannot fund a car');
+  });
+});
+
+describe('investments as planner input', () => {
+  const goal: GoalSpec = { kind: 'savings_target', targetAmountSgd: 100_000, deadlineAge: 35 };
+
+  it('positive investments reduce requiredMonthlySavings versus a zero-investments baseline', () => {
+    const baseline = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+    const investor: UserProfile = { ...baseProfile, investmentsSgd: 20_000 };
+    const invested = buildPlan(goal, investor, fillAssumptions(goal, investor));
+
+    expect(baseline.requiredMonthlySavings).toBeGreaterThan(0);
+    expect(invested.requiredMonthlySavings).toBeLessThan(baseline.requiredMonthlySavings);
+    // The monthly payment only closes the gap the investments leg leaves after
+    // growing at its own default rate for the 10 years to the deadline.
+    const expected = Math.max(
+      pmtForFv(100_000 - fvLump(20_000, 0.045, 10), baseProfile.liquidSavings, 0.018, 120),
+      0
+    );
+    expectNear(invested.requiredMonthlySavings, expected, 0.001);
+    // The combined balance column still ends at the target.
+    const lastRow = invested.savingsSchedule[invested.savingsSchedule.length - 1];
+    expectNear(lastRow?.balance ?? 0, 100_000, 0.001);
+    // The coverage fact merges into an existing point, never a sixth one.
+    expect(invested.teaching).toHaveLength(5);
+    expect(invested.teaching.some((point) => point.body.includes('investment portfolio'))).toBe(true);
+  });
+
+  it('shows the investmentRatePa assumption chip only when investments exist and the rate is unstated', () => {
+    const investor: UserProfile = { ...baseProfile, investmentsSgd: 20_000 };
+    const chip = fillAssumptions(goal, investor).find((entry) => entry.field === 'investmentRatePa');
+    expect(chip?.value).toBeCloseTo(PLANNER_DEFAULTS.investmentRatePa, 9);
+    expect(missingFields(goal, investor)).toContain('investmentRatePa');
+
+    const stated: UserProfile = { ...baseProfile, investmentsSgd: 20_000, investmentRatePa: 0.06 };
+    expect(
+      fillAssumptions(goal, stated).find((entry) => entry.field === 'investmentRatePa')
+    ).toBeUndefined();
+
+    expect(
+      fillAssumptions(goal, baseProfile).find((entry) => entry.field === 'investmentRatePa')
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * Opens the isConfigured gate with a fake in-memory key so the stubbed paths
+ * run. The fetcher is always stubbed in these tests, so nothing touches the
+ * network; the key is restored afterwards.
+ */
+async function withFakeKeyEnv(run: () => Promise<void>): Promise<void> {
+  const previous = process.env.NEBIUS_API_KEY;
+  process.env.NEBIUS_API_KEY = 'unit-test-stub-never-sent-to-any-endpoint';
+  try {
+    await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEBIUS_API_KEY;
+    } else {
+      process.env.NEBIUS_API_KEY = previous;
+    }
+  }
+}
+
+describe('enrichPlanNarrative', () => {
+  const goal: GoalSpec = { kind: 'savings_target', targetAmountSgd: 100_000, deadlineAge: 35 };
+  const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+
+  it('stays deterministic without calling any model when Nebius is unconfigured', async () => {
+    const previous = process.env.NEBIUS_API_KEY;
+    delete process.env.NEBIUS_API_KEY;
+    try {
+      let called = false;
+      const enriched = await enrichPlanNarrative(plan, async () => {
+        called = true;
+        return null;
+      });
+      expect(called).toBe(false);
+      expect(enriched.narrativeEngine).toBe('deterministic');
+      expect(enriched.verdict.reasoning).toBe(plan.verdict.reasoning);
+      expect(enriched.teaching).toEqual(plan.teaching);
+    } finally {
+      if (previous !== undefined) {
+        process.env.NEBIUS_API_KEY = previous;
+      }
+    }
+  });
+
+  it('keeps deterministic content when the fetcher returns null', async () => {
+    await withFakeKeyEnv(async () => {
+      const enriched = await enrichPlanNarrative(plan, async () => null);
+      expect(enriched.narrativeEngine).toBe('deterministic');
+      expect(enriched.verdict.reasoning).toBe(plan.verdict.reasoning);
+      expect(enriched.teaching).toEqual(plan.teaching);
+      expect(enriched.savingsSchedule).toEqual(plan.savingsSchedule);
+      expect(enriched.requiredMonthlySavings).toBe(plan.requiredMonthlySavings);
+    });
+  });
+
+  it('stays deterministic when the fetcher returns an invalid shape', async () => {
+    await withFakeKeyEnv(async () => {
+      const wrongCount = await enrichPlanNarrative(plan, async () => ({
+        verdictReasoning: 'Rewritten.',
+        teachingBodies: ['Only one body for five points.'],
+      }));
+      expect(wrongCount.narrativeEngine).toBe('deterministic');
+      expect(wrongCount.teaching).toEqual(plan.teaching);
+
+      const emptyBodies = await enrichPlanNarrative(plan, async () => ({
+        verdictReasoning: 'Rewritten.',
+        teachingBodies: plan.teaching.map(() => ''),
+      }));
+      expect(emptyBodies.narrativeEngine).toBe('deterministic');
+      expect(emptyBodies.verdict.reasoning).toBe(plan.verdict.reasoning);
+
+      const missingField = await enrichPlanNarrative(plan, async () => ({
+        teachingBodies: plan.teaching.map(() => 'A body.'),
+      }));
+      expect(missingField.narrativeEngine).toBe('deterministic');
+      expect(missingField.teaching).toEqual(plan.teaching);
+    });
+  });
+
+  it('becomes ultra with bodies replaced and the right count under a valid stub', async () => {
+    await withFakeKeyEnv(async () => {
+      const bodies = plan.teaching.map((point, index) => `Rewritten ${index + 1}: ${point.title}.`);
+      const enriched = await enrichPlanNarrative(plan, async () => ({
+        verdictReasoning: 'Rewritten reasoning keeping every figure verbatim.',
+        teachingBodies: bodies,
+      }));
+      expect(enriched.narrativeEngine).toBe('ultra');
+      expect(enriched.verdict.reasoning).toBe('Rewritten reasoning keeping every figure verbatim.');
+      expect(enriched.verdict.headline).toBe(plan.verdict.headline);
+      expect(enriched.teaching).toHaveLength(plan.teaching.length);
+      expect(enriched.teaching.map((point) => point.body)).toEqual(bodies);
+      expect(enriched.teaching.map((point) => point.title)).toEqual(
+        plan.teaching.map((point) => point.title)
+      );
+      expect(enriched.requiredMonthlySavings).toBe(plan.requiredMonthlySavings);
+      expect(enriched.scenarioGrid).toEqual(plan.scenarioGrid);
+      expect(enriched.assumptions).toEqual(plan.assumptions);
+    });
+  });
+});
+
+describe('buildCarPlan total cost of ownership', () => {
+  it('exposes a tco block with a positive total and readable assumption strings', () => {
+    const goal: GoalSpec = { kind: 'car_purchase', priceSgd: 100_000, deadlineAge: 30 };
+    const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+
+    expect(plan.tco).toBeDefined();
+    expect(plan.tco?.total).toBeGreaterThan(0);
+    expect(plan.tco?.assumptions.length).toBeGreaterThanOrEqual(6);
+    for (const line of plan.tco?.assumptions ?? []) {
+      expect(line.length).toBeGreaterThan(0);
+    }
+    // Flat interest on the 60000 loan over the 5 year cap, spread over 10
+    // ownership years, plus the snapshot running costs.
+    expect(plan.tco?.yearly.loan).toBeCloseTo((60_000 * 0.027 * 5) / 10, 6);
+    expect(plan.tco?.yearly.energy).toBeCloseTo(0.18 * 15_000, 6);
+    expect(plan.tco?.total).toBeCloseTo((plan.tco?.yearly.total ?? 0) * 10, 6);
+    const joined = plan.tco?.assumptions.join(' ') ?? '';
+    expect(joined).toContain('Insurance');
+    expect(joined).toContain('Road tax');
+    expect(joined).toContain('Maintenance');
   });
 });
