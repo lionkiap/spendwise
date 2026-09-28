@@ -47,15 +47,19 @@ const expenseCategorySchema = z.enum(EXPENSE_CATEGORIES, {
 });
 
 /**
- * Rate bound shared by baseRate and tier rates. The bound is expressed in the
- * decimal units the engine scores (0.2 means 20% cashback), so it is narrow by
- * design: user-entered terms are unverified, and the app refuses to route on a
- * number it cannot sanity check.
+ * Rate bound shared by baseRate and tier rates, in the units the engine
+ * scores. Cashback rates are decimals where 0.2 means 20 percent cashback;
+ * miles rates are miles per dollar and run to 10, matching the built-in
+ * deck. The tighter cashback ceiling is enforced per reward type in the
+ * card-level refine, so its message can name the right limit.
  */
 const rateSchema = z
   .number({ invalid_type_error: 'rate must be a number' })
-  .min(0, 'rate must be between 0 and 0.2')
-  .max(0.2, 'rate must be between 0 and 0.2');
+  .min(0, 'rate must be between 0 and 10')
+  .max(10, 'rate must be between 0 and 10');
+
+/** Highest cashback rate a user-entered card may claim (20 percent). */
+const CASHBACK_RATE_MAX = 0.2;
 
 export const customEarnTierSchema = z.object({
   category: expenseCategorySchema,
@@ -128,6 +132,24 @@ export const customCardSchema = z
         code: z.ZodIssueCode.custom,
         path: ['milesPerDollar'],
         message: 'milesPerDollar is required for a miles card and must be between 0.5 and 10',
+      });
+    }
+    if (card.rewardType === 'cashback') {
+      if (card.baseRate > CASHBACK_RATE_MAX) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['baseRate'],
+          message: `baseRate for a cashback card must be between 0 and ${CASHBACK_RATE_MAX} (20 percent)`,
+        });
+      }
+      card.earnStructure.forEach((tier, index) => {
+        if (tier.rate > CASHBACK_RATE_MAX) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['earnStructure', index, 'rate'],
+            message: `earnStructure.${index}.rate for a cashback card must be between 0 and ${CASHBACK_RATE_MAX} (20 percent)`,
+          });
+        }
       });
     }
   });

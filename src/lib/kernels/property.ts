@@ -21,8 +21,7 @@ const BSD_TIERS: ReadonlyArray<{ upTo: number; rate: number }> = [
   { upTo: 360_000, rate: 0.02 },
   { upTo: 1_000_000, rate: 0.03 },
   { upTo: 1_500_000, rate: 0.04 },
-  { upTo: 2_000_000, rate: 0.05 },
-  { upTo: 3_000_000, rate: 0.06 },
+  { upTo: 3_000_000, rate: 0.05 },
   { upTo: Number.POSITIVE_INFINITY, rate: 0.06 },
 ];
 
@@ -32,7 +31,7 @@ const BSD_TIERS: ReadonlyArray<{ upTo: number; rate: number }> = [
  * with tiers as marginal brackets, not as a rate applied to the whole price.
  * Statutory residential tiers in force since 15 Feb 2023 (iras.gov.sg):
  * 1 percent of the first 180k, 2 percent of the next 180k, 3 percent of the
- * next 640k, 4 percent up to 1.5m, 5 percent up to 2m and 6 percent from 3m.
+ * next 640k, 4 percent up to 1.5m, 5 percent up to 3m and 6 percent above 3m.
  * Re-verify on iras.gov.sg before production.
  */
 export function bsd(price: number): number {

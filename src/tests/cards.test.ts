@@ -350,7 +350,34 @@ describe("parseCustomCard", () => {
     if (!result.ok) {
       const joined = result.errors.join(" | ");
       expect(joined).toContain("earnStructure.0.rate");
-      expect(joined).toMatch(/between 0 and 0\.2/);
+      expect(joined).toMatch(/between 0 and 10/);
+    }
+  });
+
+  it("rejects a cashback rate above 20 percent but allows miles rates in mpd", () => {
+    const tooGenerous = parseCustomCard({
+      ...validInput,
+      earnStructure: [{ category: "groceries", rate: 0.5 }],
+    });
+    expect(tooGenerous.ok).toBe(false);
+    if (!tooGenerous.ok) {
+      expect(tooGenerous.errors.join(" | ")).toMatch(
+        /cashback card must be between 0 and 0\.2/,
+      );
+    }
+
+    const milesCard = parseCustomCard({
+      ...validInput,
+      rewardType: "miles",
+      baseRate: 1.2,
+      milesPerDollar: 4,
+      earnStructure: [{ category: "travel", rate: 4 }],
+    });
+    expect(milesCard.ok).toBe(true);
+    if (milesCard.ok) {
+      expect(milesCard.card.baseRate).toBe(1.2);
+      expect(milesCard.card.earnStructure[0]?.rate).toBe(4);
+      expect(milesCard.card.earnStructure[0]?.note).toContain("4.00 miles per dollar");
     }
   });
 

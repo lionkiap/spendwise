@@ -97,6 +97,12 @@ describe('property', () => {
     expect(bsd(55_000)).toBe(550);
     // 1800 + 3600 + 19200 + 20000
     expect(bsd(1_500_000)).toBe(44_600);
+    // 44600 + 25000: 500k of the 5 percent band that runs to 3m
+    expect(bsd(2_000_000)).toBe(69_600);
+    // 44600 + 75000: the full 1.5m of the 5 percent band
+    expect(bsd(3_000_000)).toBe(119_600);
+    // 119600 + 60000 above 3m at 6 percent
+    expect(bsd(4_000_000)).toBe(179_600);
   });
 
   it('absd applies the snapshot rates by citizenship and count', () => {
