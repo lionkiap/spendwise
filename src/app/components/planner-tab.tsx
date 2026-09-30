@@ -24,6 +24,7 @@ interface PlannerTabProps {
   planError: string | null;
   planResult: PlanResult | null;
   onPlan: () => void;
+  onTrackGoal: () => void;
 }
 
 export function PlannerTab({
@@ -35,6 +36,7 @@ export function PlannerTab({
   planError,
   planResult,
   onPlan,
+  onTrackGoal,
 }: PlannerTabProps) {
   return (
     <div className="stack">
@@ -159,7 +161,22 @@ export function PlannerTab({
         ) : null}
       </section>
 
-      {planResult !== null ? <PlanView result={planResult} /> : null}
+      {planResult !== null ? (
+        <>
+          <PlanView result={planResult} />
+          {planResult.goalSpec !== undefined ? (
+            <div className="track-row">
+              <p className="muted">
+                Track this goal to log what you save each month and watch your trajectory against
+                this plan on the Progress dashboard.
+              </p>
+              <button type="button" className="btn btn-secondary" onClick={onTrackGoal}>
+                Track this goal
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

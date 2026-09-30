@@ -22,15 +22,18 @@ import type { CardSpec } from '../lib/cards/types';
 import { CARDS } from '../lib/data/cards';
 import type { PlanJSON } from '../lib/planner/build';
 import type { UserProfile } from '../lib/planner/goalspec';
+import { goalNameFromSpec, goalSlug, rateFromAssumptions, type TrackedGoal } from '../lib/planner/progress';
 
 import { Header } from './components/header';
 import { PlannerTab } from './components/planner-tab';
 import { CardsTab } from './components/cards-tab';
+import { DashboardTab } from './components/dashboard-tab';
 import { buildSampleMonth } from './components/ledger-manager';
 import {
   CUSTOM_CARDS_KEY,
   DEFAULT_PROFILE,
   DEFAULT_PROMPT,
+  GOALS_KEY,
   LEDGER_KEY,
   MILES_VALUATION_MAX,
   MILES_VALUATION_MIN,
@@ -41,7 +44,9 @@ import {
   customCardsFromStored,
   defaultProfileForm,
   isCustomCardStored,
+  isGoalSpec,
   isLedgerRow,
+  isTrackedGoal,
   profileFromForm,
   type CustomCardStored,
   type LedgerRow,
@@ -67,6 +72,9 @@ export default function Home() {
   const [wallet, setWallet] = useState<string[]>([]);
   const [customStored, setCustomStored] = useState<CustomCardStored[]>([]);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
+
+  // Progress tab state.
+  const [goals, setGoals] = useState<TrackedGoal[]>([]);
 
   // Hydrate from localStorage after mount so SSR and first render agree.
   useEffect(() => {
@@ -117,6 +125,13 @@ export default function Home() {
           setLedger(entries.filter(isLedgerRow));
         }
       }
+      const rawGoals = window.localStorage.getItem(GOALS_KEY);
+      if (rawGoals !== null) {
+        const stored: unknown = JSON.parse(rawGoals);
+        if (Array.isArray(stored)) {
+          setGoals(stored.filter(isTrackedGoal));
+        }
+      }
     } catch {
       // Corrupt storage falls back to defaults; nothing to recover here.
     }
@@ -152,6 +167,13 @@ export default function Home() {
     }
     window.localStorage.setItem(CUSTOM_CARDS_KEY, JSON.stringify(customStored));
   }, [hydrated, customStored]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    window.localStorage.setItem(GOALS_KEY, JSON.stringify(goals));
+  }, [hydrated, goals]);
 
   const customCards = useMemo(() => customCardsFromStored(customStored), [customStored]);
   const allCards: CardSpec[] = useMemo(() => mergeCards(CARDS, customCards), [customCards]);
@@ -211,6 +233,86 @@ export default function Home() {
     setLedger((previous) => [...previous, entry]);
   }
 
+  // Progress tab handlers.
+
+  function trackCurrentGoal(): void {
+    if (planResult === null || planResult.goalSpec === undefined || monthKey === '') {
+      return;
+    }
+    const spec = planResult.goalSpec;
+    const plan = planResult.plan;
+    const profile = profileFromForm(profileForm, milesValuation);
+    const schedule = plan.savingsSchedule;
+    const lastBalance = schedule.length > 0 ? schedule[schedule.length - 1]?.balance : undefined;
+    const name = goalNameFromSpec(spec);
+    const deadlineAssumption = plan.assumptions.find((entry) => entry.field === 'deadlineAge');
+    const deadlineAge =
+      spec.deadlineAge > profile.age
+        ? spec.deadlineAge
+        : deadlineAssumption !== undefined && deadlineAssumption.value > profile.age
+          ? deadlineAssumption.value
+          : profile.age + 5;
+    const target =
+      lastBalance !== undefined && lastBalance > 0
+        ? lastBalance
+        : Math.max(0, plan.requiredMonthlySavings * Math.max(1, (deadlineAge - profile.age) * 12));
+    const tracked: TrackedGoal = {
+      id: goalSlug(name),
+      name,
+      goalSpec: spec,
+      targetSgd: target,
+      requiredMonthlySgd: Math.max(0, plan.requiredMonthlySavings),
+      ratePa: rateFromAssumptions(plan.assumptions),
+      startAge: profile.age,
+      startSavingsSgd: Math.max(0, profile.liquidSavings),
+      deadlineAge,
+      startMonthKey: monthKey,
+      logs: [],
+    };
+    // Re-tracking the same goal re-baselines it: the old logs belong to the
+    // old starting point.
+    setGoals((previous) => {
+      const existing = previous.findIndex((goal) => goal.id === tracked.id);
+      if (existing === -1) {
+        return [...previous, tracked];
+      }
+      const next = [...previous];
+      next[existing] = tracked;
+      return next;
+    });
+    setActiveTab('progress');
+  }
+
+  function deleteGoal(goalId: string): void {
+    setGoals((previous) => previous.filter((goal) => goal.id !== goalId));
+  }
+
+  function logSavings(goalId: string, logMonthKey: string, contributedSgd: number, note: string): void {
+    setGoals((previous) =>
+      previous.map((goal) =>
+        goal.id === goalId
+          ? {
+              ...goal,
+              logs: [
+                ...goal.logs.filter((log) => log.monthKey !== logMonthKey),
+                { monthKey: logMonthKey, contributedSgd, ...(note !== '' ? { note } : {}) },
+              ],
+            }
+          : goal
+      )
+    );
+  }
+
+  function deleteLog(goalId: string, logMonthKey: string): void {
+    setGoals((previous) =>
+      previous.map((goal) =>
+        goal.id === goalId
+          ? { ...goal, logs: goal.logs.filter((log) => log.monthKey !== logMonthKey) }
+          : goal
+      )
+    );
+  }
+
   async function handlePlan(): Promise<void> {
     const trimmed = prompt.trim();
     if (!trimmed) {
@@ -235,10 +337,11 @@ export default function Home() {
         setPlanError(message);
         setPlanResult(null);
       } else {
-        const payload = data as { plan: PlanJSON; parser?: string };
+        const payload = data as { plan: PlanJSON; parser?: string; goalSpec?: unknown };
         setPlanResult({
           plan: payload.plan,
           parser: payload.parser === 'nemotron' ? 'nemotron' : 'local-fallback',
+          ...(isGoalSpec(payload.goalSpec) ? { goalSpec: payload.goalSpec } : {}),
         });
       }
     } catch {
@@ -269,6 +372,19 @@ export default function Home() {
               planError={planError}
               planResult={planResult}
               onPlan={handlePlan}
+              onTrackGoal={trackCurrentGoal}
+            />
+          </div>
+        ) : activeTab === 'progress' ? (
+          <div role="tabpanel" id="panel-progress" aria-labelledby="tab-progress" className="stack">
+            <DashboardTab
+              goals={goals}
+              profile={profileFromForm(profileForm, milesValuation)}
+              monthKey={monthKey}
+              onDeleteGoal={deleteGoal}
+              onLogSavings={logSavings}
+              onDeleteLog={deleteLog}
+              onGoToPlanner={setActiveTab}
             />
           </div>
         ) : (

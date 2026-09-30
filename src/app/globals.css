@@ -1456,3 +1456,282 @@ textarea {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Progress dashboard: net position strip, goal sheets, ring and chart     */
+/* ---------------------------------------------------------------------- */
+
+.pos-total {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--forest);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pos-bar {
+  display: flex;
+  height: 16px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--paper-deep);
+}
+
+.pos-fill {
+  min-width: 2px;
+}
+
+.pos-fill + .pos-fill {
+  border-left: 2px solid var(--surface);
+}
+
+.pos-fill-cash {
+  background: var(--forest);
+}
+
+.pos-fill-cpf {
+  background: #7ba843;
+}
+
+.pos-fill-inv {
+  background: #d9c98a;
+}
+
+.pos-legend {
+  margin-top: var(--space-2);
+}
+
+.sheet-stats {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+  flex: 1 1 420px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1.12rem;
+  color: var(--ink);
+}
+
+.stat-warn {
+  color: var(--brick);
+}
+
+.stat-sub {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Progress ring */
+
+.ring {
+  position: relative;
+  width: 116px;
+  flex: none;
+}
+
+.ring-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--paper-deep);
+  stroke-width: 10;
+}
+
+.ring-fill {
+  fill: none;
+  stroke: var(--forest);
+  stroke-width: 10;
+  transform: rotate(-90deg);
+  transform-origin: 60px 60px;
+}
+
+.ring-fill-done {
+  stroke: #7ba843;
+}
+
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.ring-pct {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.ring-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Trajectory chart */
+
+.chart {
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-grid {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+}
+
+.chart-axis {
+  font-family: var(--font-body);
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+.chart-area {
+  fill: var(--leaf);
+  fill-opacity: 0.16;
+  stroke: none;
+}
+
+.chart-planned {
+  fill: none;
+  stroke: var(--forest);
+  stroke-width: 2;
+}
+
+.chart-actual {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.chart-dot {
+  fill: var(--ink);
+}
+
+.chart-target {
+  stroke: var(--ochre);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.chart-target-label {
+  fill: var(--ochre);
+  font-weight: 700;
+}
+
+.chart-now {
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+.chart-legend {
+  margin-top: var(--space-2);
+  gap: var(--space-3);
+}
+
+.chart-key {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding-left: 20px;
+  position: relative;
+}
+
+.chart-key::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 14px;
+  height: 0;
+  border-top: 2.5px solid;
+  transform: translateY(-50%);
+}
+
+.chart-key-planned::before {
+  border-color: var(--forest);
+}
+
+.chart-key-actual::before {
+  border-color: var(--ink);
+}
+
+.chart-now-label {
+  margin-left: auto;
+  font-size: 0.72rem;
+}
+
+/* Savings log and the track-this-goal row */
+
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+}
+
+.track-row .muted {
+  flex: 1 1 320px;
+  margin: 0;
+}
+
+.sheet-log {
+  margin-top: var(--space-3);
+}
+
+.log-form {
+  align-items: start;
+}
+
+.log-table td {
+  font-size: 0.85rem;
+}

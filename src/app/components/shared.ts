@@ -9,20 +9,22 @@ import { CARDS } from '../../lib/data/cards';
 import type { CardSpec, ExpenseCategory, LedgerEntry } from '../../lib/cards/types';
 import { parseCustomCard } from '../../lib/cards/custom';
 import type { PlanJSON } from '../../lib/planner/build';
-import type { UserProfile } from '../../lib/planner/goalspec';
+import { goalSpecSchema, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
+import type { TrackedGoal } from '../../lib/planner/progress';
 
 /* ---------------------------------------------------------------------- */
 /* localStorage keys. sw_profile, sw_wallet and sw_ledger keep their       */
-/* existing shapes; sw_custom_cards is new in v2.                          */
+/* existing shapes; sw_custom_cards is new in v2; sw_goals in v3.          */
 /* ---------------------------------------------------------------------- */
 
 export const PROFILE_KEY = 'sw_profile';
 export const WALLET_KEY = 'sw_wallet';
 export const LEDGER_KEY = 'sw_ledger';
 export const CUSTOM_CARDS_KEY = 'sw_custom_cards';
+export const GOALS_KEY = 'sw_goals';
 
 export type PlanParser = 'nemotron' | 'local-fallback';
-export type TabId = 'planner' | 'cards';
+export type TabId = 'planner' | 'progress' | 'cards';
 
 export const MILES_VALUATION_MIN = 1.4;
 export const MILES_VALUATION_MAX = 2.4;
@@ -75,6 +77,8 @@ export interface ProfileFormState {
 export interface PlanResult {
   plan: PlanJSON;
   parser: PlanParser;
+  /** The validated goal spec, present when the API returned one. */
+  goalSpec?: GoalSpec;
 }
 
 /** Shape of GET /api/status. */
@@ -251,6 +255,48 @@ export function isStatusJson(value: unknown): value is StatusJson {
     typeof (models as Record<string, unknown>).ultra === 'string' &&
     typeof (models as Record<string, unknown>).super === 'string' &&
     typeof (models as Record<string, unknown>).nano === 'string'
+  );
+}
+
+/** Guard for the goal spec read back from /api/plan payloads. */
+export function isGoalSpec(value: unknown): value is GoalSpec {
+  return goalSpecSchema.safeParse(value).success;
+}
+
+const MONTH_KEY_PATTERN = /^\d{4}-\d{2}$/;
+
+/** Defensive guard for sw_goals contents read back from storage. */
+export function isTrackedGoal(value: unknown): value is TrackedGoal {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const goal = value as Record<string, unknown>;
+  const numberField = (key: string): boolean =>
+    typeof goal[key] === 'number' && Number.isFinite(goal[key] as number);
+  return (
+    typeof goal.id === 'string' &&
+    typeof goal.name === 'string' &&
+    isGoalSpec(goal.goalSpec) &&
+    numberField('targetSgd') &&
+    numberField('requiredMonthlySgd') &&
+    numberField('ratePa') &&
+    numberField('startAge') &&
+    numberField('startSavingsSgd') &&
+    numberField('deadlineAge') &&
+    typeof goal.startMonthKey === 'string' &&
+    MONTH_KEY_PATTERN.test(goal.startMonthKey) &&
+    Array.isArray(goal.logs) &&
+    goal.logs.every(
+      (log) =>
+        log !== null &&
+        typeof log === 'object' &&
+        typeof (log as Record<string, unknown>).monthKey === 'string' &&
+        MONTH_KEY_PATTERN.test((log as Record<string, unknown>).monthKey as string) &&
+        typeof (log as Record<string, unknown>).contributedSgd === 'number' &&
+        Number.isFinite((log as Record<string, unknown>).contributedSgd as number) &&
+        ((log as Record<string, unknown>).note === undefined ||
+          typeof (log as Record<string, unknown>).note === 'string')
+    )
   );
 }
 
