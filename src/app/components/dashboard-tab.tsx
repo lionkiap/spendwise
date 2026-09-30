@@ -10,7 +10,7 @@
  * src/lib/planner/progress.ts, which lean on the kernels; this file only
  * draws what they compute.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   actualPace,
@@ -329,9 +329,18 @@ function Stat({
 
 function ProgressRing({ ratio }: { ratio: number }) {
   const clamped = Math.max(0, Math.min(1, ratio));
+  const [grown, setGrown] = useState(false);
+  // Grow the arc from zero whenever the ratio settles or changes; the CSS
+  // transition on .ring-fill does the drawing.
+  useEffect(() => {
+    setGrown(false);
+    const timer = window.setTimeout(() => setGrown(true), 50);
+    return () => window.clearTimeout(timer);
+  }, [clamped]);
+
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
-  const dash = circumference * clamped;
+  const dash = grown ? circumference * clamped : 0;
   const overTarget = ratio >= 1;
   return (
     <div className="ring">

@@ -1735,3 +1735,239 @@ textarea {
 .log-table td {
   font-size: 0.85rem;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Motion: entrances and micro-interactions (reduced motion honored above) */
+/* ---------------------------------------------------------------------- */
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes heroIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+[role='tabpanel'] {
+  animation: fadeUp 420ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.verdict-hero {
+  animation: heroIn 520ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.sheet {
+  animation: fadeUp 460ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.rec {
+  animation: fadeUp 380ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.rec:nth-child(2) { animation-delay: 50ms; }
+.rec:nth-child(3) { animation-delay: 100ms; }
+.rec:nth-child(4) { animation-delay: 150ms; }
+.rec:nth-child(5) { animation-delay: 200ms; }
+.rec:nth-child(n + 6) { animation-delay: 250ms; }
+
+.ring-fill {
+  transition: stroke-dasharray 900ms cubic-bezier(0.22, 0.61, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Wallet gallery: swipeable deck of card faces                           */
+/* ---------------------------------------------------------------------- */
+
+.gallery-viewport {
+  overflow: hidden;
+  touch-action: pan-y;
+  cursor: grab;
+  user-select: none;
+  outline-offset: 4px;
+}
+
+.gallery-viewport:active {
+  cursor: grabbing;
+}
+
+.gallery-track {
+  display: flex;
+  will-change: transform;
+}
+
+.gallery-track-settled {
+  transition: transform 480ms cubic-bezier(0.22, 0.61, 0.2, 1);
+}
+
+.gallery-slide {
+  flex: 0 0 84%;
+  min-width: 0;
+  padding: 6px 10px 6px 0;
+}
+
+.gal-face {
+  position: relative;
+  aspect-ratio: 1.586;
+  border-radius: 14px;
+  padding: 18px 20px;
+  color: #f3efdf;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid rgba(243, 239, 223, 0.28);
+  box-shadow: 0 1px 0 rgba(34, 38, 31, 0.2), 0 14px 26px -14px rgba(34, 38, 31, 0.5);
+  opacity: 0.55;
+  transform: scale(0.94);
+  transition: transform 220ms ease-out, opacity 220ms ease-out;
+  overflow: hidden;
+}
+
+.gal-face-active {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.gal-monogram {
+  position: absolute;
+  right: -8px;
+  bottom: -46px;
+  font-family: var(--font-display);
+  font-size: 10rem;
+  font-weight: 700;
+  line-height: 1;
+  color: rgba(243, 239, 223, 0.13);
+  pointer-events: none;
+}
+
+.gal-face-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gal-issuer {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(243, 239, 223, 0.85);
+}
+
+.gal-chip {
+  width: 34px;
+  height: 24px;
+  border-radius: 5px;
+  background: var(--leaf);
+  border: 1.5px solid rgba(243, 239, 223, 0.75);
+}
+
+.gal-name {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 6px;
+  position: relative;
+}
+
+.gal-face-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.gal-reward-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.gal-fee {
+  font-size: 0.75rem;
+  color: rgba(243, 239, 223, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+
+.gallery-dots {
+  display: flex;
+  gap: 8px;
+}
+
+.gallery-dot {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--ink-soft);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 160ms ease-out, border-color 160ms ease-out;
+}
+
+.gallery-dot-on {
+  background: var(--forest);
+  border-color: var(--forest);
+}
+
+.gallery-hint {
+  font-size: 0.72rem;
+  font-style: italic;
+}
+
+.gal-benefits {
+  margin-top: var(--space-4);
+  animation: fadeUp 420ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.gal-benefits-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.gal-benefits-name {
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  margin: 0 0 2px;
+}
+
+.gal-logged {
+  margin: 0 0 var(--space-3);
+}
+
+.gal-met {
+  color: #2f5d3a;
+  font-weight: 700;
+}
+
+.gal-unmet {
+  color: var(--brick);
+  font-weight: 700;
+}

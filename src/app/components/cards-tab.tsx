@@ -26,6 +26,7 @@ import {
 } from './shared';
 import { CustomCardManager } from './custom-card-manager';
 import { LedgerManager } from './ledger-manager';
+import { CardGallery } from './card-gallery';
 
 interface CardsTabProps {
   wallet: string[];
@@ -253,6 +254,14 @@ export function CardsTab({
 
   return (
     <div className="stack">
+      {walletCards.length > 0 ? (
+        <CardGallery
+          cards={walletCards}
+          ledger={ledger}
+          monthKey={monthKey}
+          milesValuationCents={milesValuation}
+        />
+      ) : null}
       <div className="duo">
         <section className="card">
           <h2 className="card-title">Your wallet</h2>
