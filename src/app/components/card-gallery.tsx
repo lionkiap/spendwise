@@ -101,7 +101,7 @@ export function CardGallery({ cards, ledger, monthKey, milesValuationCents }: Ca
     <section className="card">
       <div className="card-title-row">
         <h2 className="card-title">Wallet gallery</h2>
-        <span className="muted gallery-hint">drag the deck, or use the arrows</span>
+        <span className="muted gallery-hint">drag the deck, tap a card for its terms, or use the arrows</span>
       </div>
 
       <div
@@ -204,21 +204,34 @@ function CardFace({
   active: boolean;
 }) {
   const [tilt, setTilt] = useState<{ rx: number; ry: number } | null>(null);
+  const [flipped, setFlipped] = useState(false);
+  const downX = useRef<number | null>(null);
 
   const headline =
     card.rewardType === 'miles' && card.milesPerDollar !== undefined
       ? `${card.milesPerDollar} mpd`
       : `${fmtPct(card.baseRate, 1)} base`;
 
+  function toggleFlip(): void {
+    setFlipped((previous) => !previous);
+  }
+
+  function handleClick(event: React.MouseEvent<HTMLDivElement>): void {
+    // A release more than a few pixels from the press was a drag, not a tap.
+    if (downX.current !== null && Math.abs(event.clientX - downX.current) > 8) {
+      return;
+    }
+    toggleFlip();
+  }
+
   return (
     <div
-      className={`gal-face ${active ? 'gal-face-active' : ''}`}
+      className={`gal-card ${active ? 'gal-card-active' : ''}`}
       style={{
-        background: color,
         transform:
           tilt === null
             ? undefined
-            : `perspective(900px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg)`,
+            : `perspective(1000px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg)`,
       }}
       onPointerMove={(event) => {
         if (!active) {
@@ -231,20 +244,84 @@ function CardFace({
       }}
       onPointerLeave={() => setTilt(null)}
     >
-      <span className="gal-monogram" aria-hidden="true">
-        {card.name.trim().charAt(0).toUpperCase() || 'S'}
-      </span>
-      <div className="gal-face-top">
-        <span className="gal-issuer">{card.issuer}</span>
-        <span className="gal-chip" aria-hidden="true" />
-      </div>
-      <div className="gal-face-bottom">
-        <h3 className="gal-name">{card.name}</h3>
-        <div className="gal-face-meta">
-          <span className="gal-reward-tag">
-            {card.rewardType === 'miles' ? 'MILES' : 'CASHBACK'} · {headline}
+      <div
+        className={`gal-flip-inner ${flipped ? 'gal-flipped' : ''}`}
+        role={active ? 'button' : undefined}
+        tabIndex={active ? 0 : undefined}
+        aria-label={active ? `Flip ${card.name} to read its full terms` : undefined}
+        aria-pressed={active ? flipped : undefined}
+        onClick={active ? handleClick : undefined}
+        onPointerDown={active ? (event) => { downX.current = event.clientX; } : undefined}
+        onKeyDown={
+          active
+            ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  toggleFlip();
+                }
+              }
+            : undefined
+        }
+      >
+        <div className="gal-face gal-front" style={{ background: color }}>
+          <span className="gal-monogram" aria-hidden="true">
+            {card.name.trim().charAt(0).toUpperCase() || 'S'}
           </span>
-          <span className="gal-fee">{fmtMoney(card.annualFeeSgd)}/yr</span>
+          <div className="gal-face-top">
+            <span className="gal-issuer">{card.issuer}</span>
+            <span className="gal-chip" aria-hidden="true" />
+          </div>
+          <div className="gal-face-bottom">
+            <h3 className="gal-name">{card.name}</h3>
+            <div className="gal-face-meta">
+              <span className="gal-reward-tag">
+                {card.rewardType === 'miles' ? 'MILES' : 'CASHBACK'} · {headline}
+              </span>
+              <span className="gal-fee">{fmtMoney(card.annualFeeSgd)}/yr</span>
+            </div>
+          </div>
+          {active ? <span className="gal-tap-hint">tap to flip</span> : null}
+        </div>
+
+        <div className="gal-face gal-back" style={{ background: color }}>
+          <div className="gal-magstripe" aria-hidden="true" />
+          <div className="gal-back-body">
+            <span className="gal-back-title">Card terms</span>
+            <dl className="gal-back-rows">
+              <div>
+                <dt>Base</dt>
+                <dd>
+                  {card.rewardType === 'miles'
+                    ? `${card.baseRate} mpd everywhere`
+                    : `${fmtPct(card.baseRate, 2)} everywhere`}
+                </dd>
+              </div>
+              {card.earnStructure.map((tier) => (
+                <div key={tier.category}>
+                  <dt>{categoryLabel(tier.category)}</dt>
+                  <dd>
+                    {card.rewardType === 'miles' ? `${tier.rate} mpd` : fmtPct(tier.rate, 1)}
+                    {tier.capMonthlySgd !== undefined ? ` · cap ${fmtMoney(tier.capMonthlySgd)}/mo` : ''}
+                  </dd>
+                </div>
+              ))}
+              {card.minMonthlySpendSgd !== undefined ? (
+                <div>
+                  <dt>Min spend</dt>
+                  <dd>
+                    {fmtMoney(card.minMonthlySpendSgd)}/mo
+                    {card.minSpendNote !== undefined ? ' to unlock bonuses' : ''}
+                  </dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>Annual fee</dt>
+                <dd>{fmtMoney(card.annualFeeSgd)}</dd>
+              </div>
+            </dl>
+            <p className="gal-back-source">{card.sourceNote}</p>
+            {active ? <span className="gal-tap-hint gal-tap-hint-back">tap to flip back</span> : null}
+          </div>
         </div>
       </div>
     </div>
