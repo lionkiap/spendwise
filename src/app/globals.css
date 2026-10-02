@@ -2084,3 +2084,176 @@ textarea {
   color: var(--brick);
   font-weight: 700;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Progress tab interactivity: scroll reveal, chart drawing, tap details  */
+/* ---------------------------------------------------------------------- */
+
+.reveal-init {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 560ms cubic-bezier(0.22, 0.61, 0.2, 1),
+    transform 560ms cubic-bezier(0.22, 0.61, 0.2, 1);
+}
+
+.reveal-init.revealed {
+  opacity: 1;
+  transform: none;
+}
+
+.pos-fill {
+  transition: width 700ms cubic-bezier(0.22, 0.61, 0.2, 1);
+}
+
+.pos-pill {
+  transition: opacity 560ms ease-out;
+}
+
+/* Stat tiles: tap to expand the explanation */
+
+.stat-tap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.stat-tap:hover .stat-label {
+  color: var(--forest);
+}
+
+.stat-tap:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 2px;
+}
+
+.stat:not(.stat-open) .stat-tap .stat-label::after {
+  content: ' +';
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.stat-open .stat-tap .stat-label::after {
+  content: ' \2212';
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.stat-detail {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.55;
+  transition: max-height 320ms ease-out, opacity 320ms ease-out, margin 320ms ease-out;
+}
+
+.stat-open .stat-detail {
+  max-height: 240px;
+  opacity: 1;
+  margin-top: 7px;
+}
+
+/* Ring replay on tap */
+
+.ring-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.ring-btn:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 4px;
+}
+
+/* Chart: self-drawing curve, popping dots, late fades */
+
+.chart-dot {
+  fill: var(--ink);
+  cursor: pointer;
+  transform: scale(0);
+  transform-origin: center;
+  transform-box: fill-box;
+  transition: transform 280ms cubic-bezier(0.34, 1.4, 0.4, 1);
+}
+
+.dot-in {
+  transform: scale(1);
+}
+
+.chart-dot:hover {
+  fill: var(--forest);
+}
+
+.chart-dot:focus-visible {
+  outline: none;
+  stroke: var(--forest);
+  stroke-width: 2;
+}
+
+.chart-area {
+  opacity: 0;
+  transition: opacity 700ms ease-out 700ms;
+}
+
+.chart-area-in {
+  opacity: 1;
+}
+
+.chart-target,
+.chart-now {
+  opacity: 0;
+  transition: opacity 500ms ease-out 1000ms;
+}
+
+.chart-late-in {
+  opacity: 1;
+}
+
+/* Tapped month readout under the chart */
+
+.chart-detail {
+  margin: var(--space-2) 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--leaf);
+  background: var(--leaf-soft);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  animation: fadeUp 300ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+}
+
+.chart-detail-close {
+  margin-left: 10px;
+}
+
+/* Freshly logged month pulses once in the table */
+
+@keyframes logPulse {
+  0% {
+    background: #dcefbc;
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.log-row-new {
+  animation: logPulse 1500ms ease-out;
+}

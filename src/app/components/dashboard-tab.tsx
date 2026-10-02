@@ -9,10 +9,17 @@
  * chart library). Every number comes from the pure functions in
  * src/lib/planner/progress.ts, which lean on the kernels; this file only
  * draws what they compute.
+ *
+ * The tab is built to feel alive: sections reveal as they scroll into view,
+ * the chart draws itself, stat tiles count up and expand their explanations
+ * on tap, chart dots are tappable for a month readout, the ring replays on
+ * tap, and a freshly logged month pulses in the table. Everything defers to
+ * prefers-reduced-motion.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
+  actualBalance,
   actualPace,
   chartSeries,
   monthKeyDiff,
@@ -26,6 +33,92 @@ import {
 import type { UserProfile } from '../../lib/planner/goalspec';
 
 import { fmtMoney, type TabId } from './shared';
+
+/* ------------------------------------------------------------------ */
+/* Motion helpers                                                      */
+/* ------------------------------------------------------------------ */
+
+type RevealState = 'pending' | 'armed' | 'revealed';
+
+/**
+ * Scroll-reveal: arms after mount (so server-rendered content is never lost),
+ * then flips to revealed when the element scrolls into view.
+ */
+function useReveal<T extends HTMLElement>(threshold = 0.15): [React.RefObject<T>, RevealState] {
+  const ref = useRef<T>(null);
+  const [state, setState] = useState<RevealState>('pending');
+
+  useEffect(() => {
+    const node = ref.current;
+    if (node === null) {
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setState('revealed');
+      return;
+    }
+    setState('armed');
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setState('revealed');
+            observer.disconnect();
+          }
+        }
+      },
+      { threshold }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [threshold]);
+
+  return [ref, state];
+}
+
+function revealClass(state: RevealState): string {
+  if (state === 'pending') {
+    return '';
+  }
+  return state === 'revealed' ? 'reveal-init revealed' : 'reveal-init';
+}
+
+/** Eased count-up toward the target number, skipped under reduced motion. */
+function useCountUp(target: number, durationMs = 700): number {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+
+  useEffect(() => {
+    if (fromRef.current === target) {
+      return;
+    }
+    if (typeof window === 'undefined' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      fromRef.current = target;
+      setDisplay(target);
+      return;
+    }
+    const from = fromRef.current;
+    fromRef.current = target;
+    const start = window.performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(from + (target - from) * eased);
+      if (progress < 1) {
+        frame = window.requestAnimationFrame(tick);
+      }
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [target, durationMs]);
+
+  return display;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dashboard shell                                                     */
+/* ------------------------------------------------------------------ */
 
 interface DashboardTabProps {
   goals: TrackedGoal[];
@@ -83,6 +176,7 @@ export function DashboardTab({
 /* ------------------------------------------------------------------ */
 
 function PositionStrip({ profile }: { profile: UserProfile }) {
+  const [ref, reveal] = useReveal<HTMLElement>();
   const cash = Math.max(0, profile.liquidSavings);
   const cpf = Math.max(0, profile.cpfOaBalance);
   const investments = Math.max(0, profile.investmentsSgd ?? 0);
@@ -90,6 +184,7 @@ function PositionStrip({ profile }: { profile: UserProfile }) {
   if (total <= 0) {
     return null;
   }
+  const shown = reveal === 'revealed';
   const parts = [
     { label: 'Cash', value: cash, className: 'pos-fill-cash' },
     { label: 'CPF OA', value: cpf, className: 'pos-fill-cpf' },
@@ -97,23 +192,27 @@ function PositionStrip({ profile }: { profile: UserProfile }) {
   ].filter((part) => part.value > 0);
 
   return (
-    <section className="card">
+    <section className={`card ${revealClass(reveal)}`} ref={ref}>
       <div className="card-title-row">
         <h2 className="card-title">Your position today</h2>
         <span className="pos-total">{fmtMoney(total)}</span>
       </div>
       <div className="pos-bar" role="img" aria-label={`Position split: ${parts.map((p) => `${p.label} ${fmtMoney(p.value)}`).join(', ')}`}>
-        {parts.map((part) => (
+        {parts.map((part, index) => (
           <div
             key={part.label}
             className={`pos-fill ${part.className}`}
-            style={{ width: `${(part.value / total) * 100}%` }}
+            style={{ width: shown ? `${(part.value / total) * 100}%` : '0%', transitionDelay: `${index * 110}ms` }}
           />
         ))}
       </div>
       <div className="pill-row pos-legend">
-        {parts.map((part) => (
-          <span key={part.label} className="pill pill-neutral">
+        {parts.map((part, index) => (
+          <span
+            key={part.label}
+            className="pill pill-neutral pos-pill"
+            style={{ transitionDelay: `${180 + index * 90}ms` }}
+          >
             {part.label} {fmtMoney(part.value)}
           </span>
         ))}
@@ -146,6 +245,11 @@ function GoalSheet({
   const [logMonth, setLogMonth] = useState(monthKey);
   const [logAmount, setLogAmount] = useState('');
   const [logNote, setLogNote] = useState('');
+  const [lastLogged, setLastLogged] = useState<string | null>(null);
+
+  const [statsRef, statsReveal] = useReveal<HTMLDivElement>();
+  const [chartRef, chartReveal] = useReveal<HTMLElement>();
+  const [logRef, logReveal] = useReveal<HTMLDivElement>();
 
   const elapsed = Math.max(0, monthKeyDiff(goal.startMonthKey, monthKey));
   const totalMonths = Math.max(1, (goal.deadlineAge - goal.startAge) * 12);
@@ -156,10 +260,7 @@ function GoalSheet({
   const projected = projectedBalanceAtDeadline(goal, elapsed);
   const plannedNow = plannedBalance(goal, elapsed);
   const finishMonths = monthsToTarget(goal.startSavingsSgd, goal.ratePa, pace, goal.targetSgd);
-  const finishAge =
-    finishMonths === null
-      ? null
-      : goal.startAge + Math.ceil(finishMonths / 12);
+  const finishAge = finishMonths === null ? null : goal.startAge + Math.ceil(finishMonths / 12);
   const actualTotal = goal.logs.reduce((sum, log) => sum + log.contributedSgd, 0);
 
   function submitLog(): void {
@@ -168,6 +269,7 @@ function GoalSheet({
       return;
     }
     onLogSavings(goal.id, logMonth, Math.round(parsed * 100) / 100, logNote.trim());
+    setLastLogged(logMonth);
     setLogAmount('');
     setLogNote('');
   }
@@ -189,23 +291,34 @@ function GoalSheet({
         </div>
       </div>
 
-      <div className="sheet-stats">
+      <div className={`sheet-stats ${revealClass(statsReveal)}`} ref={statsRef}>
         <ProgressRing ratio={ratio} />
         <div className="stat-grid">
-          <Stat label="Saved so far" value={fmtMoney(actualTotal)} sub={`plan: ${fmtMoney(plannedNow)}`} />
+          <Stat
+            label="Saved so far"
+            value={actualTotal}
+            format={fmtMoney}
+            sub={`plan: ${fmtMoney(plannedNow)}`}
+            detail="The total of your logged savings for this goal. The plan figure beside it is where the original plan's curve said you would be by now, starting pot and growth included. Tap any tile to collapse this note."
+          />
           <Stat
             label="Required / month"
-            value={fmtMoney(goal.requiredMonthlySgd)}
+            value={goal.requiredMonthlySgd}
+            format={fmtMoney}
             sub={`actual pace: ${fmtMoney(pace)}`}
+            detail="The plan's solved figure: the monthly amount that, growing at the goal's rate, reaches the target by the deadline. Your actual pace is the average of what you have logged each elapsed month."
           />
           <Stat
             label="Months left"
-            value={String(monthsLeft)}
+            value={monthsLeft}
+            format={(n) => String(Math.round(n))}
             sub={elapsed === 0 ? 'tracking starts this month' : `${elapsed} elapsed`}
+            detail="Calendar months between now and the deadline age recorded when the goal was tracked. Re-track the goal to re-baseline the clock."
           />
           <Stat
             label={`At age ${goal.deadlineAge}`}
-            value={fmtMoney(projected)}
+            value={projected}
+            format={fmtMoney}
             sub={
               finishAge === null
                 ? 'never at this pace'
@@ -214,13 +327,16 @@ function GoalSheet({
                   : `at this pace age ${finishAge}`
             }
             warn={projected < goal.targetSgd}
+            detail={`Where your observed pace lands by the deadline if it continues, grown at ${Math.round(goal.ratePa * 10000) / 100} percent a year. Below the target of ${fmtMoney(goal.targetSgd)} the tile turns red.`}
           />
         </div>
       </div>
 
-      <TrajectoryChart goal={goal} elapsed={elapsed} />
+      <figure className={`chart ${revealClass(chartReveal)}`} ref={chartRef}>
+        <TrajectoryChart goal={goal} elapsed={elapsed} revealed={chartReveal === 'revealed'} />
+      </figure>
 
-      <div className="sheet-log">
+      <div className={`sheet-log ${revealClass(logReveal)}`} ref={logRef}>
         <h3 className="section-subtitle">Log this month's saving</h3>
         <div className="field-row log-form">
           <label className="field">
@@ -275,7 +391,10 @@ function GoalSheet({
                 {[...goal.logs]
                   .sort((a, b) => (a.monthKey < b.monthKey ? 1 : -1))
                   .map((log) => (
-                    <tr key={log.monthKey}>
+                    <tr
+                      key={log.monthKey}
+                      className={log.monthKey === lastLogged ? 'log-row-new' : undefined}
+                    >
                       <td>{log.monthKey}</td>
                       <td className="money">{fmtMoney(log.contributedSgd)}</td>
                       <td className="muted">{log.note ?? ''}</td>
@@ -306,19 +425,33 @@ function GoalSheet({
 function Stat({
   label,
   value,
+  format,
   sub,
   warn = false,
+  detail,
 }: {
   label: string;
-  value: string;
+  value: number;
+  format: (value: number) => string;
   sub?: string;
   warn?: boolean;
+  detail: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const shown = useCountUp(value);
   return (
-    <div className="stat">
-      <span className="stat-label">{label}</span>
-      <span className={`stat-value ${warn ? 'stat-warn' : ''}`}>{value}</span>
-      {sub !== undefined ? <span className="stat-sub">{sub}</span> : null}
+    <div className={`stat ${open ? 'stat-open' : ''}`}>
+      <button
+        type="button"
+        className="stat-tap"
+        aria-expanded={open}
+        onClick={() => setOpen((previous) => !previous)}
+      >
+        <span className="stat-label">{label}</span>
+        <span className={`stat-value ${warn ? 'stat-warn' : ''}`}>{format(shown)}</span>
+        {sub !== undefined ? <span className="stat-sub">{sub}</span> : null}
+      </button>
+      <p className="stat-detail">{detail}</p>
     </div>
   );
 }
@@ -330,20 +463,26 @@ function Stat({
 function ProgressRing({ ratio }: { ratio: number }) {
   const clamped = Math.max(0, Math.min(1, ratio));
   const [grown, setGrown] = useState(false);
-  // Grow the arc from zero whenever the ratio settles or changes; the CSS
-  // transition on .ring-fill does the drawing.
+
+  // Grow the arc from zero whenever the ratio settles or changes, and again
+  // whenever the ring is tapped: the CSS transition draws the arc.
   useEffect(() => {
     setGrown(false);
     const timer = window.setTimeout(() => setGrown(true), 50);
     return () => window.clearTimeout(timer);
   }, [clamped]);
 
+  function replay(): void {
+    setGrown(false);
+    window.setTimeout(() => setGrown(true), 60);
+  }
+
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
   const dash = grown ? circumference * clamped : 0;
   const overTarget = ratio >= 1;
   return (
-    <div className="ring">
+    <button type="button" className="ring ring-btn" onClick={replay} aria-label="Replay the progress arc">
       <svg viewBox="0 0 120 120" className="ring-svg" role="img" aria-label={`Progress ${Math.round(clamped * 100)} percent of the target`}>
         <circle cx="60" cy="60" r={radius} className="ring-track" />
         <circle
@@ -358,12 +497,31 @@ function ProgressRing({ ratio }: { ratio: number }) {
         <span className="ring-pct">{overTarget ? '100%' : `${Math.round(clamped * 100)}%`}</span>
         <span className="ring-label">of target</span>
       </div>
-    </div>
+    </button>
   );
 }
 
-function TrajectoryChart({ goal, elapsed }: { goal: TrackedGoal; elapsed: number }) {
+function TrajectoryChart({
+  goal,
+  elapsed,
+  revealed,
+}: {
+  goal: TrackedGoal;
+  elapsed: number;
+  revealed: boolean;
+}) {
   const series = chartSeries(goal, elapsed);
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
+  const plannedPathRef = useRef<SVGPathElement | null>(null);
+  const [plannedLength, setPlannedLength] = useState(0);
+
+  useEffect(() => {
+    const path = plannedPathRef.current;
+    if (path !== null) {
+      setPlannedLength(path.getTotalLength());
+    }
+  }, [series]);
+
   const width = 640;
   const height = 220;
   const padLeft = 56;
@@ -388,9 +546,18 @@ function TrajectoryChart({ goal, elapsed }: { goal: TrackedGoal; elapsed: number
   const ticks = [0, 0.5, 1].map((fraction) => Math.round((maxValue * fraction) / 100) * 100);
   const ageAt = (month: number): number => goal.startAge + month / 12;
 
+  const selectedPoint =
+    selectedMonth === null ? null : series.actual.find((point) => point.month === selectedMonth) ?? null;
+  const selectedLogged =
+    selectedMonth === null
+      ? null
+      : goal.logs
+          .filter((log) => monthKeyDiff(goal.startMonthKey, log.monthKey) === selectedMonth)
+          .reduce((sum, log) => sum + log.contributedSgd, 0);
+
   return (
-    <figure className="chart">
-      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label="Planned savings curve versus actual saved">
+    <>
+      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label="Planned savings curve versus actual saved. Tap any dot for that month.">
         {ticks.map((tick) => (
           <g key={tick}>
             <line x1={padLeft} x2={width - padRight} y1={y(tick)} y2={y(tick)} className="chart-grid" />
@@ -400,26 +567,58 @@ function TrajectoryChart({ goal, elapsed }: { goal: TrackedGoal; elapsed: number
           </g>
         ))}
 
-        <path d={plannedArea} className="chart-area" />
-        <path d={plannedPath} className="chart-planned" />
+        <path d={plannedArea} className={`chart-area ${revealed ? 'chart-area-in' : ''}`} />
+        <path
+          ref={plannedPathRef}
+          d={plannedPath}
+          className="chart-planned chart-draw"
+          style={{
+            strokeDasharray: plannedLength > 0 ? plannedLength : undefined,
+            strokeDashoffset: revealed ? 0 : plannedLength,
+            transition: 'stroke-dashoffset 1100ms cubic-bezier(0.3, 0.7, 0.2, 1)',
+          }}
+        />
         <line
           x1={padLeft}
           x2={width - padRight}
           y1={y(goal.targetSgd)}
           y2={y(goal.targetSgd)}
-          className="chart-target"
+          className={`chart-target ${revealed ? 'chart-late-in' : ''}`}
         />
         <text x={width - padRight} y={y(goal.targetSgd) - 5} className="chart-axis chart-target-label" textAnchor="end">
           target {shortMoney(goal.targetSgd)}
         </text>
 
         {elapsed > 0 ? (
-          <line x1={x(elapsed)} x2={x(elapsed)} y1={padTop} y2={padTop + plotHeight} className="chart-now" />
+          <line
+            x1={x(elapsed)}
+            x2={x(elapsed)}
+            y1={padTop}
+            y2={padTop + plotHeight}
+            className={`chart-now ${revealed ? 'chart-late-in' : ''}`}
+          />
         ) : null}
 
         {series.actual.length > 1 ? <path d={actualPath} className="chart-actual" /> : null}
-        {series.actual.map((point) => (
-          <circle key={point.month} cx={x(point.month)} cy={y(point.balance)} r={3.2} className="chart-dot" />
+        {series.actual.map((point, index) => (
+          <circle
+            key={point.month}
+            cx={x(point.month)}
+            cy={y(point.balance)}
+            r={selectedMonth === point.month ? 5 : 3.2}
+            className={`chart-dot ${revealed ? 'dot-in' : ''}`}
+            style={{ transitionDelay: `${300 + index * 45}ms` }}
+            role="button"
+            tabIndex={0}
+            aria-label={`Month ${point.month}: ${fmtMoney(point.balance)}`}
+            onClick={() => setSelectedMonth(point.month === selectedMonth ? null : point.month)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setSelectedMonth(point.month === selectedMonth ? null : point.month);
+              }
+            }}
+          />
         ))}
 
         {[0, Math.round(series.totalMonths / 2), series.totalMonths].map((month, index) => (
@@ -439,7 +638,21 @@ function TrajectoryChart({ goal, elapsed }: { goal: TrackedGoal; elapsed: number
         <span className="chart-key chart-key-actual">actual</span>
         {elapsed > 0 ? <span className="muted chart-now-label">today: month {elapsed}</span> : null}
       </figcaption>
-    </figure>
+      {selectedPoint !== null && selectedLogged !== null ? (
+        <p className="chart-detail" key={selectedPoint.month}>
+          <span className="strong">Month {selectedPoint.month}</span> · age{' '}
+          {ageAt(selectedPoint.month).toFixed(1)} · balance {fmtMoney(selectedPoint.balance)} · logged{' '}
+          {fmtMoney(selectedLogged)} that month
+          <button
+            type="button"
+            className="btn btn-ghost btn-small chart-detail-close"
+            onClick={() => setSelectedMonth(null)}
+          >
+            dismiss
+          </button>
+        </p>
+      ) : null}
+    </>
   );
 }
 
