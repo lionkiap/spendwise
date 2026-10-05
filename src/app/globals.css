@@ -2257,3 +2257,227 @@ textarea {
 .log-row-new {
   animation: logPulse 1500ms ease-out;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Spaces: You / Partner / Us switcher in the masthead                    */
+/* ---------------------------------------------------------------------- */
+
+.space-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 0 2px;
+}
+
+.space-row-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.space-group {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--paper-deep);
+}
+
+/* Quiter sibling of the tab control: same small-caps stamp vocabulary,
+   smaller type and inset weight instead of a full raised sheet. */
+.space-switch {
+  border: none;
+  border-left: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  transition: background-color 160ms ease-out, color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+
+.space-switch:first-child {
+  border-left: none;
+}
+
+.space-switch:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.space-switch-on {
+  background: var(--surface);
+  color: var(--forest);
+  box-shadow: inset 0 -2px 0 var(--forest);
+}
+
+.space-switch:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Us-space savings log: the contributor stamp toggle                     */
+/* ---------------------------------------------------------------------- */
+
+.log-contributor {
+  gap: 5px;
+}
+
+.contributor-toggle {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--paper-deep);
+  align-self: flex-start;
+}
+
+.contributor-btn {
+  border: none;
+  border-left: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  transition: background-color 160ms ease-out, color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+
+.contributor-btn:first-child {
+  border-left: none;
+}
+
+.contributor-btn:hover {
+  color: var(--ink);
+}
+
+.contributor-btn-on {
+  background: var(--surface);
+}
+
+.contributor-btn-on.contributor-btn-you {
+  color: var(--forest);
+  box-shadow: inset 0 -2px 0 var(--forest);
+}
+
+.contributor-btn-on.contributor-btn-partner {
+  color: var(--brick);
+  box-shadow: inset 0 -2px 0 var(--brick);
+}
+
+.contributor-btn:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Us-space chart: the partner's actual line and dots in brick            */
+/* ---------------------------------------------------------------------- */
+
+.chart-actual-partner {
+  stroke: var(--brick);
+}
+
+.chart-dot-partner {
+  fill: var(--brick);
+}
+
+.chart-dot-partner:hover {
+  fill: var(--brick);
+  stroke: var(--forest-deep);
+  stroke-width: 1;
+}
+
+.chart-key-partner::before {
+  border-color: var(--brick);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Us-space planner: the read-only household profile card                 */
+/* ---------------------------------------------------------------------- */
+
+.household-list {
+  margin: 0;
+}
+
+.household-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.household-row:first-child {
+  border-top: 1px solid var(--rule);
+}
+
+.household-row dt {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.household-row dd {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.household-unit {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+.household-note {
+  margin-top: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Us-space wallet: the Y / P owner stamp on shared wallet items          */
+/* ---------------------------------------------------------------------- */
+
+.owner-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  margin-left: 7px;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.owner-badge-you {
+  border-color: var(--forest);
+  color: var(--forest);
+  background: var(--leaf-soft);
+}
+
+.owner-badge-partner {
+  border-color: var(--brick);
+  color: var(--brick);
+  background: var(--brick-soft);
+}

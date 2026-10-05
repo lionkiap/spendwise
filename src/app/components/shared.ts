@@ -2,8 +2,11 @@
  * Shared client-side types and pure helpers for the SpendWise UI.
  *
  * Everything here is deterministic: no clock reads, no randomness and no
- * locale-dependent formatting. The only impurity allowed in src/app is Date
- * inside effects and handlers, which this file never touches.
+ * locale-dependent formatting. The only impurity in src/app is Date inside
+ * effects and handlers, plus the one deliberate exception below:
+ * migrateLegacyStorage touches window.localStorage, because it must run once
+ * before hydration reads any key. It is guarded for SSR and never called at
+ * import time.
  */
 import { CARDS } from '../../lib/data/cards';
 import type { CardSpec, ExpenseCategory, LedgerEntry } from '../../lib/cards/types';
@@ -13,15 +16,66 @@ import { goalSpecSchema, type GoalSpec, type UserProfile } from '../../lib/plann
 import type { TrackedGoal } from '../../lib/planner/progress';
 
 /* ---------------------------------------------------------------------- */
-/* localStorage keys. sw_profile, sw_wallet and sw_ledger keep their       */
-/* existing shapes; sw_custom_cards is new in v2; sw_goals in v3.          */
+/* localStorage keys. v4 splits storage into three spaces: you, partner   */
+/* and us. The pre-couples keys sw_profile, sw_wallet and sw_ledger are    */
+/* kept read-only as legacy inputs to migrateLegacyStorage and are never   */
+/* written or deleted; sw_custom_cards (v2) and sw_goals (v3) keep their   */
+/* shapes, sw_goals goals only gain the optional space and contributor     */
+/* fields.                                                                 */
 /* ---------------------------------------------------------------------- */
 
-export const PROFILE_KEY = 'sw_profile';
-export const WALLET_KEY = 'sw_wallet';
-export const LEDGER_KEY = 'sw_ledger';
+/** Pre-couples profile key; legacy input only, copied into sw_profile_you. */
+export const LEGACY_PROFILE_KEY = 'sw_profile';
+/** Pre-couples wallet key; legacy input only, copied into sw_wallet_you. */
+export const LEGACY_WALLET_KEY = 'sw_wallet';
+/** Pre-couples ledger key; legacy input only, copied into sw_ledger_you. */
+export const LEGACY_LEDGER_KEY = 'sw_ledger';
+
+export const SPACE_ACTIVE_KEY = 'sw_space_active';
+export const PROFILE_YOU_KEY = 'sw_profile_you';
+export const PROFILE_PARTNER_KEY = 'sw_profile_partner';
+export const WALLET_YOU_KEY = 'sw_wallet_you';
+export const WALLET_PARTNER_KEY = 'sw_wallet_partner';
+export const WALLET_US_KEY = 'sw_wallet_us';
+export const LEDGER_YOU_KEY = 'sw_ledger_you';
+export const LEDGER_PARTNER_KEY = 'sw_ledger_partner';
+export const LEDGER_US_KEY = 'sw_ledger_us';
 export const CUSTOM_CARDS_KEY = 'sw_custom_cards';
 export const GOALS_KEY = 'sw_goals';
+
+/** The three spaces a plan, wallet or ledger can live in. */
+export type SpaceId = 'you' | 'partner' | 'us';
+/** Spaces that carry their own editable profile form. */
+export type PersonSpace = Exclude<SpaceId, 'us'>;
+
+export const SPACE_IDS: ReadonlyArray<SpaceId> = ['you', 'partner', 'us'];
+export const PERSON_SPACE_IDS: ReadonlyArray<PersonSpace> = ['you', 'partner'];
+
+/** Key holding a person's profile, by space. */
+export function profileKeyFor(space: PersonSpace): string {
+  return space === 'you' ? PROFILE_YOU_KEY : PROFILE_PARTNER_KEY;
+}
+
+/** Key holding a space's wallet. */
+export function walletKeyFor(space: SpaceId): string {
+  if (space === 'you') {
+    return WALLET_YOU_KEY;
+  }
+  return space === 'partner' ? WALLET_PARTNER_KEY : WALLET_US_KEY;
+}
+
+/** Key holding a space's ledger. */
+export function ledgerKeyFor(space: SpaceId): string {
+  if (space === 'you') {
+    return LEDGER_YOU_KEY;
+  }
+  return space === 'partner' ? LEDGER_PARTNER_KEY : LEDGER_US_KEY;
+}
+
+/** Small display label for a space: You, Partner or Us. */
+export function spaceLabel(space: SpaceId): string {
+  return space === 'you' ? 'You' : space === 'partner' ? 'Partner' : 'Us';
+}
 
 export type PlanParser = 'nemotron' | 'local-fallback';
 export type TabId = 'planner' | 'progress' | 'cards';
@@ -285,6 +339,10 @@ export function isTrackedGoal(value: unknown): value is TrackedGoal {
     numberField('deadlineAge') &&
     typeof goal.startMonthKey === 'string' &&
     MONTH_KEY_PATTERN.test(goal.startMonthKey) &&
+    (goal.space === undefined ||
+      goal.space === 'you' ||
+      goal.space === 'partner' ||
+      goal.space === 'us') &&
     Array.isArray(goal.logs) &&
     goal.logs.every(
       (log) =>
@@ -295,9 +353,92 @@ export function isTrackedGoal(value: unknown): value is TrackedGoal {
         typeof (log as Record<string, unknown>).contributedSgd === 'number' &&
         Number.isFinite((log as Record<string, unknown>).contributedSgd as number) &&
         ((log as Record<string, unknown>).note === undefined ||
-          typeof (log as Record<string, unknown>).note === 'string')
+          typeof (log as Record<string, unknown>).note === 'string') &&
+        ((log as Record<string, unknown>).contributor === undefined ||
+          (log as Record<string, unknown>).contributor === 'you' ||
+          (log as Record<string, unknown>).contributor === 'partner')
     )
   );
+}
+
+/**
+ * One-time-per-install legacy storage migration, safe to call on every
+ * hydrate. Nothing is ever deleted: when a pre-couples key exists and its
+ * per-space successor does not, the value is copied into the you space
+ * (sw_profile -> sw_profile_you, sw_wallet -> sw_wallet_you, sw_ledger ->
+ * sw_ledger_you). sw_goals is then rewritten in place adding
+ * space: goal.space ?? 'you' to every goal and contributor: 'you' to every
+ * log that lacks one, but only when something is actually missing, so the
+ * second call is always a no-op. Returns the names of the keys it wrote.
+ */
+export function migrateLegacyStorage(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  const touched: string[] = [];
+  try {
+    const copies: ReadonlyArray<{ legacy: string; next: string }> = [
+      { legacy: LEGACY_PROFILE_KEY, next: PROFILE_YOU_KEY },
+      { legacy: LEGACY_WALLET_KEY, next: WALLET_YOU_KEY },
+      { legacy: LEGACY_LEDGER_KEY, next: LEDGER_YOU_KEY },
+    ];
+    for (const { legacy, next } of copies) {
+      const rawLegacy = window.localStorage.getItem(legacy);
+      if (rawLegacy !== null && window.localStorage.getItem(next) === null) {
+        window.localStorage.setItem(next, rawLegacy);
+        touched.push(next);
+      }
+    }
+
+    const rawGoals = window.localStorage.getItem(GOALS_KEY);
+    if (rawGoals !== null) {
+      const stored: unknown = JSON.parse(rawGoals);
+      if (Array.isArray(stored)) {
+        let changed = false;
+        const rewritten = stored.map((goal) => {
+          if (goal === null || typeof goal !== 'object') {
+            return goal;
+          }
+          const record = goal as Record<string, unknown>;
+          const needsSpace = record.space !== 'you' && record.space !== 'partner' && record.space !== 'us';
+          let goalChanged = needsSpace;
+          const nextGoal: Record<string, unknown> = { ...record };
+          if (needsSpace) {
+            nextGoal.space = 'you';
+          }
+          if (Array.isArray(record.logs)) {
+            const nextLogs = record.logs.map((log) => {
+              if (log === null || typeof log !== 'object') {
+                return log;
+              }
+              const logRecord = log as Record<string, unknown>;
+              if (logRecord.contributor !== 'you' && logRecord.contributor !== 'partner') {
+                goalChanged = true;
+                return { ...logRecord, contributor: 'you' };
+              }
+              return log;
+            });
+            if (goalChanged) {
+              nextGoal.logs = nextLogs;
+            }
+          }
+          if (goalChanged) {
+            changed = true;
+          }
+          return goalChanged ? nextGoal : goal;
+        });
+        if (changed) {
+          window.localStorage.setItem(GOALS_KEY, JSON.stringify(rewritten));
+          touched.push(GOALS_KEY);
+        }
+      }
+    }
+  } catch {
+    // Corrupt storage leaves the keys untouched; hydration falls back to
+    // defaults exactly as it did before the spaces feature.
+    return touched;
+  }
+  return touched;
 }
 
 /** Re-validate stored drafts; anything that no longer parses is dropped. */

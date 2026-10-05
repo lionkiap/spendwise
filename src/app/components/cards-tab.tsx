@@ -43,6 +43,12 @@ interface CardsTabProps {
   onClearMonth: () => void;
   onLoadSampleMonth: () => void;
   onAppendEntry: (entry: LedgerRow) => void;
+  /**
+   * Us space only: card id to the personal wallet it already sits in, so the
+   * shared wallet list can stamp each card Y or P. Undefined in personal
+   * spaces, where every card is self-evidently the owner's.
+   */
+  ownerById?: Record<string, 'you' | 'partner'>;
 }
 
 interface ExpenseFormState {
@@ -80,6 +86,7 @@ export function CardsTab({
   onClearMonth,
   onLoadSampleMonth,
   onAppendEntry,
+  ownerById,
 }: CardsTabProps) {
   const [expense, setExpense] = useState<ExpenseFormState>({
     amount: '',
@@ -268,6 +275,7 @@ export function CardsTab({
           <div className="wallet-list">
             {allCards.map((card) => {
               const checked = wallet.includes(card.id);
+              const owner = ownerById !== undefined ? ownerById[card.id] : undefined;
               return (
                 <label key={card.id} className={`wallet-item ${checked ? 'wallet-item-on' : ''}`}>
                   <input type="checkbox" checked={checked} onChange={() => onToggleWallet(card.id)} />
@@ -275,6 +283,14 @@ export function CardsTab({
                     <span className="wallet-item-name">
                       {card.name}
                       {isCustomCard(card) ? <span className="custom-badge">Custom</span> : null}
+                      {owner !== undefined ? (
+                        <span
+                          className={`owner-badge ${owner === 'partner' ? 'owner-badge-partner' : 'owner-badge-you'}`}
+                          title={owner === 'partner' ? 'Already in the partner wallet' : 'Already in your wallet'}
+                        >
+                          {owner === 'partner' ? 'P' : 'Y'}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="wallet-item-meta">
                       {card.issuer} ·{' '}

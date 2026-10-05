@@ -22,6 +22,8 @@ import {
   actualBalance,
   actualPace,
   chartSeries,
+  chartSeriesByContributor,
+  contributorTotals,
   monthKeyDiff,
   monthsToTarget,
   paceStatus,
@@ -32,7 +34,7 @@ import {
 } from '../../lib/planner/progress';
 import type { UserProfile } from '../../lib/planner/goalspec';
 
-import { fmtMoney, type TabId } from './shared';
+import { fmtMoney, type SpaceId, type TabId } from './shared';
 
 /* ------------------------------------------------------------------ */
 /* Motion helpers                                                      */
@@ -121,16 +123,24 @@ function useCountUp(target: number, durationMs = 700): number {
 /* ------------------------------------------------------------------ */
 
 interface DashboardTabProps {
+  space: SpaceId;
   goals: TrackedGoal[];
   profile: UserProfile;
   monthKey: string;
   onDeleteGoal: (goalId: string) => void;
-  onLogSavings: (goalId: string, monthKey: string, contributedSgd: number, note: string) => void;
+  onLogSavings: (
+    goalId: string,
+    monthKey: string,
+    contributedSgd: number,
+    note: string,
+    contributor: 'you' | 'partner'
+  ) => void;
   onDeleteLog: (goalId: string, logMonthKey: string) => void;
   onGoToPlanner: (tab: TabId) => void;
 }
 
 export function DashboardTab({
+  space,
   goals,
   profile,
   monthKey,
@@ -141,7 +151,7 @@ export function DashboardTab({
 }: DashboardTabProps) {
   return (
     <div className="stack">
-      <PositionStrip profile={profile} />
+      <PositionStrip profile={profile} space={space} />
       {goals.length === 0 ? (
         <section className="card dash-empty">
           <h2 className="card-title">No tracked goals yet</h2>
@@ -159,6 +169,7 @@ export function DashboardTab({
         goals.map((goal) => (
           <GoalSheet
             key={goal.id}
+            space={space}
             goal={goal}
             monthKey={monthKey}
             onDeleteGoal={onDeleteGoal}
@@ -175,7 +186,7 @@ export function DashboardTab({
 /* Net position strip                                                  */
 /* ------------------------------------------------------------------ */
 
-function PositionStrip({ profile }: { profile: UserProfile }) {
+function PositionStrip({ profile, space }: { profile: UserProfile; space: SpaceId }) {
   const [ref, reveal] = useReveal<HTMLElement>();
   const cash = Math.max(0, profile.liquidSavings);
   const cpf = Math.max(0, profile.cpfOaBalance);
@@ -194,7 +205,7 @@ function PositionStrip({ profile }: { profile: UserProfile }) {
   return (
     <section className={`card ${revealClass(reveal)}`} ref={ref}>
       <div className="card-title-row">
-        <h2 className="card-title">Your position today</h2>
+        <h2 className="card-title">{space === 'us' ? 'Household position today' : 'Your position today'}</h2>
         <span className="pos-total">{fmtMoney(total)}</span>
       </div>
       <div className="pos-bar" role="img" aria-label={`Position split: ${parts.map((p) => `${p.label} ${fmtMoney(p.value)}`).join(', ')}`}>
@@ -230,27 +241,37 @@ function PositionStrip({ profile }: { profile: UserProfile }) {
 /* ------------------------------------------------------------------ */
 
 function GoalSheet({
+  space,
   goal,
   monthKey,
   onDeleteGoal,
   onLogSavings,
   onDeleteLog,
 }: {
+  space: SpaceId;
   goal: TrackedGoal;
   monthKey: string;
   onDeleteGoal: (goalId: string) => void;
-  onLogSavings: (goalId: string, monthKey: string, contributedSgd: number, note: string) => void;
+  onLogSavings: (
+    goalId: string,
+    monthKey: string,
+    contributedSgd: number,
+    note: string,
+    contributor: 'you' | 'partner'
+  ) => void;
   onDeleteLog: (goalId: string, logMonthKey: string) => void;
 }) {
   const [logMonth, setLogMonth] = useState(monthKey);
   const [logAmount, setLogAmount] = useState('');
   const [logNote, setLogNote] = useState('');
+  const [logContributor, setLogContributor] = useState<'you' | 'partner'>('you');
   const [lastLogged, setLastLogged] = useState<string | null>(null);
 
   const [statsRef, statsReveal] = useReveal<HTMLDivElement>();
   const [chartRef, chartReveal] = useReveal<HTMLElement>();
   const [logRef, logReveal] = useReveal<HTMLDivElement>();
 
+  const isUsGoal = space === 'us' && (goal.space ?? 'you') === 'us';
   const elapsed = Math.max(0, monthKeyDiff(goal.startMonthKey, monthKey));
   const totalMonths = Math.max(1, (goal.deadlineAge - goal.startAge) * 12);
   const monthsLeft = Math.max(0, totalMonths - elapsed);
@@ -262,13 +283,14 @@ function GoalSheet({
   const finishMonths = monthsToTarget(goal.startSavingsSgd, goal.ratePa, pace, goal.targetSgd);
   const finishAge = finishMonths === null ? null : goal.startAge + Math.ceil(finishMonths / 12);
   const actualTotal = goal.logs.reduce((sum, log) => sum + log.contributedSgd, 0);
+  const totals = contributorTotals(goal, elapsed);
 
   function submitLog(): void {
     const parsed = Number(logAmount);
     if (!Number.isFinite(parsed) || parsed <= 0 || !/^\d{4}-\d{2}$/.test(logMonth)) {
       return;
     }
-    onLogSavings(goal.id, logMonth, Math.round(parsed * 100) / 100, logNote.trim());
+    onLogSavings(goal.id, logMonth, Math.round(parsed * 100) / 100, logNote.trim(), logContributor);
     setLastLogged(logMonth);
     setLogAmount('');
     setLogNote('');
@@ -298,7 +320,11 @@ function GoalSheet({
             label="Saved so far"
             value={actualTotal}
             format={fmtMoney}
-            sub={`plan: ${fmtMoney(plannedNow)}`}
+            sub={
+              isUsGoal
+                ? `you ${fmtMoney(totals.you)} · partner ${fmtMoney(totals.partner)}`
+                : `plan: ${fmtMoney(plannedNow)}`
+            }
             detail="The total of your logged savings for this goal. The plan figure beside it is where the original plan's curve said you would be by now, starting pot and growth included. Tap any tile to collapse this note."
           />
           <Stat
@@ -368,6 +394,25 @@ function GoalSheet({
               onChange={(event) => setLogNote(event.target.value)}
             />
           </label>
+          {isUsGoal ? (
+            <div className="field log-contributor" role="radiogroup" aria-label="Logged by">
+              <span>Logged by</span>
+              <div className="contributor-toggle">
+                {(['you', 'partner'] as const).map((who) => (
+                  <button
+                    key={who}
+                    type="button"
+                    role="radio"
+                    aria-checked={logContributor === who}
+                    className={`contributor-btn contributor-btn-${who} ${logContributor === who ? 'contributor-btn-on' : ''}`}
+                    onClick={() => setLogContributor(who)}
+                  >
+                    Logged by {who === 'you' ? 'You' : 'Partner'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="field log-submit">
             <span aria-hidden="true">&nbsp;</span>
             <button type="button" className="btn btn-primary" onClick={submitLog}>
@@ -511,7 +556,13 @@ function TrajectoryChart({
   revealed: boolean;
 }) {
   const series = chartSeries(goal, elapsed);
+  // As soon as the partner has logged anything, the single actual line is
+  // replaced by the two per-contributor lines from chartSeriesByContributor:
+  // both start from the same pot and each carries one person's contributions.
+  const hasPartnerLogs = goal.logs.some((log) => log.contributor === 'partner');
+  const contributorSeries = hasPartnerLogs ? chartSeriesByContributor(goal, elapsed) : null;
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
+  const [selectedContributor, setSelectedContributor] = useState<'you' | 'partner'>('you');
   const plannedPathRef = useRef<SVGPathElement | null>(null);
   const [plannedLength, setPlannedLength] = useState(0);
 
@@ -539,12 +590,32 @@ function TrajectoryChart({
     .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.month).toFixed(1)},${y(point.balance).toFixed(1)}`)
     .join(' ');
   const plannedArea = `${plannedPath} L${x(series.totalMonths).toFixed(1)},${(padTop + plotHeight).toFixed(1)} L${padLeft},${(padTop + plotHeight).toFixed(1)} Z`;
-  const actualPath = series.actual
-    .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.month).toFixed(1)},${y(point.balance).toFixed(1)}`)
-    .join(' ');
+  const linePath = (points: Array<{ month: number; balance: number }>): string =>
+    points
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.month).toFixed(1)},${y(point.balance).toFixed(1)}`)
+      .join(' ');
+  const actualPath = linePath(series.actual);
+  const youPath = contributorSeries !== null ? linePath(contributorSeries.you) : '';
+  const partnerPath = contributorSeries !== null ? linePath(contributorSeries.partner) : '';
 
   const ticks = [0, 0.5, 1].map((fraction) => Math.round((maxValue * fraction) / 100) * 100);
   const ageAt = (month: number): number => goal.startAge + month / 12;
+
+  /** Raw per-contributor sums of the logs dated exactly at this month. */
+  const monthSplit = (month: number): { you: number; partner: number } => {
+    const split = { you: 0, partner: 0 };
+    for (const log of goal.logs) {
+      if (monthKeyDiff(goal.startMonthKey, log.monthKey) !== month) {
+        continue;
+      }
+      if (log.contributor === 'partner') {
+        split.partner += log.contributedSgd;
+      } else {
+        split.you += log.contributedSgd;
+      }
+    }
+    return split;
+  };
 
   const selectedPoint =
     selectedMonth === null ? null : series.actual.find((point) => point.month === selectedMonth) ?? null;
@@ -554,6 +625,42 @@ function TrajectoryChart({
       : goal.logs
           .filter((log) => monthKeyDiff(goal.startMonthKey, log.monthKey) === selectedMonth)
           .reduce((sum, log) => sum + log.contributedSgd, 0);
+  const selectedYouPoint =
+    contributorSeries !== null && selectedMonth !== null
+      ? contributorSeries.you.find((point) => point.month === selectedMonth) ?? null
+      : null;
+  const selectedPartnerPoint =
+    contributorSeries !== null && selectedMonth !== null
+      ? contributorSeries.partner.find((point) => point.month === selectedMonth) ?? null
+      : null;
+  const selectedSplit = selectedMonth === null ? null : monthSplit(selectedMonth);
+
+  function selectDot(month: number, contributor: 'you' | 'partner'): void {
+    setSelectedContributor(contributor);
+    setSelectedMonth((previous) => (previous === month ? null : month));
+  }
+
+  const dotCircles = (points: Array<{ month: number; balance: number }>, who: 'you' | 'partner') =>
+    points.map((point, index) => (
+      <circle
+        key={`${who}-${point.month}`}
+        cx={x(point.month)}
+        cy={y(point.balance)}
+        r={selectedMonth === point.month && selectedContributor === who ? 5 : 3.2}
+        className={`chart-dot ${who === 'partner' ? 'chart-dot-partner' : ''} ${revealed ? 'dot-in' : ''}`}
+        style={{ transitionDelay: `${300 + index * 45}ms` }}
+        role="button"
+        tabIndex={0}
+        aria-label={`Month ${point.month}, ${who}: ${fmtMoney(point.balance)}`}
+        onClick={() => selectDot(point.month, who)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectDot(point.month, who);
+          }
+        }}
+      />
+    ));
 
   return (
     <>
@@ -599,27 +706,40 @@ function TrajectoryChart({
           />
         ) : null}
 
-        {series.actual.length > 1 ? <path d={actualPath} className="chart-actual" /> : null}
-        {series.actual.map((point, index) => (
-          <circle
-            key={point.month}
-            cx={x(point.month)}
-            cy={y(point.balance)}
-            r={selectedMonth === point.month ? 5 : 3.2}
-            className={`chart-dot ${revealed ? 'dot-in' : ''}`}
-            style={{ transitionDelay: `${300 + index * 45}ms` }}
-            role="button"
-            tabIndex={0}
-            aria-label={`Month ${point.month}: ${fmtMoney(point.balance)}`}
-            onClick={() => setSelectedMonth(point.month === selectedMonth ? null : point.month)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                setSelectedMonth(point.month === selectedMonth ? null : point.month);
-              }
-            }}
-          />
-        ))}
+        {contributorSeries !== null ? (
+          <>
+            {contributorSeries.you.length > 1 ? <path d={youPath} className="chart-actual" /> : null}
+            {contributorSeries.partner.length > 1 ? (
+              <path d={partnerPath} className="chart-actual chart-actual-partner" />
+            ) : null}
+            {dotCircles(contributorSeries.you, 'you')}
+            {dotCircles(contributorSeries.partner, 'partner')}
+          </>
+        ) : (
+          <>
+            {series.actual.length > 1 ? <path d={actualPath} className="chart-actual" /> : null}
+            {series.actual.map((point, index) => (
+              <circle
+                key={point.month}
+                cx={x(point.month)}
+                cy={y(point.balance)}
+                r={selectedMonth === point.month ? 5 : 3.2}
+                className={`chart-dot ${revealed ? 'dot-in' : ''}`}
+                style={{ transitionDelay: `${300 + index * 45}ms` }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Month ${point.month}: ${fmtMoney(point.balance)}`}
+                onClick={() => setSelectedMonth(point.month === selectedMonth ? null : point.month)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedMonth(point.month === selectedMonth ? null : point.month);
+                  }
+                }}
+              />
+            ))}
+          </>
+        )}
 
         {[0, Math.round(series.totalMonths / 2), series.totalMonths].map((month, index) => (
           <text
@@ -635,10 +755,35 @@ function TrajectoryChart({
       </svg>
       <figcaption className="chart-legend pill-row">
         <span className="chart-key chart-key-planned">planned</span>
-        <span className="chart-key chart-key-actual">actual</span>
+        {contributorSeries !== null ? (
+          <>
+            <span className="chart-key chart-key-actual">you</span>
+            <span className="chart-key chart-key-partner">partner</span>
+          </>
+        ) : (
+          <span className="chart-key chart-key-actual">actual</span>
+        )}
         {elapsed > 0 ? <span className="muted chart-now-label">today: month {elapsed}</span> : null}
       </figcaption>
-      {selectedPoint !== null && selectedLogged !== null ? (
+      {contributorSeries !== null &&
+      selectedMonth !== null &&
+      selectedSplit !== null &&
+      selectedYouPoint !== null &&
+      selectedPartnerPoint !== null ? (
+        <p className="chart-detail" key={`${selectedMonth}-${selectedContributor}`}>
+          <span className="strong">Month {selectedMonth}</span> · age{' '}
+          {ageAt(selectedMonth).toFixed(1)} · pot + you {fmtMoney(selectedYouPoint.balance)} · pot +
+          partner {fmtMoney(selectedPartnerPoint.balance)} · logged that month: you{' '}
+          {fmtMoney(selectedSplit.you)} · partner {fmtMoney(selectedSplit.partner)}
+          <button
+            type="button"
+            className="btn btn-ghost btn-small chart-detail-close"
+            onClick={() => setSelectedMonth(null)}
+          >
+            dismiss
+          </button>
+        </p>
+      ) : contributorSeries === null && selectedPoint !== null && selectedLogged !== null ? (
         <p className="chart-detail" key={selectedPoint.month}>
           <span className="strong">Month {selectedPoint.month}</span> · age{' '}
           {ageAt(selectedPoint.month).toFixed(1)} · balance {fmtMoney(selectedPoint.balance)} · logged{' '}

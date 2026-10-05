@@ -1,19 +1,28 @@
 'use client';
 
 /**
- * SpendWise client shell: sticky header with a segmented switcher over two
- * tabs of client-side state.
+ * SpendWise client shell: sticky header with a segmented switcher over three
+ * tabs of client-side state, and three spaces underneath: You, Partner and Us.
  *
  * Tab one (Goal Planner) posts the prompt and profile to /api/plan and renders
- * the returned PlanJSON. Tab two (Card Maximizer) runs the deterministic
- * routing engine entirely in the browser with zero model calls, over the
- * merged deck of built-in cards plus the user's own saved cards.
+ * the returned PlanJSON. Tab two (Progress) tracks logged savings against the
+ * plan. Tab three (Card Maximizer) runs the deterministic routing engine
+ * entirely in the browser with zero model calls, over the merged deck of
+ * built-in cards plus the user's own saved cards.
  *
- * Client state persists in localStorage under sw_profile, sw_wallet, sw_ledger
- * and sw_custom_cards. Storage reads happen inside effects so server
- * prerender and client hydration always agree, and every key stays backward
- * compatible: profiles saved before the investment fields simply hydrate with
- * those inputs empty.
+ * The you and partner spaces each carry their own profile form, wallet and
+ * ledger; the us space carries a shared wallet and ledger and plans on
+ * combineProfiles(you, partner). The dashboard filters tracked goals by
+ * space. A user who never opens the partner space sees the exact app they
+ * had: on hydrate migrateLegacyStorage copies the pre-couples sw_profile,
+ * sw_wallet and sw_ledger into the you space once, and nothing is ever
+ * deleted.
+ *
+ * Storage: sw_space_active, sw_profile_you, sw_profile_partner,
+ * sw_wallet_you, sw_wallet_partner, sw_wallet_us, sw_ledger_you,
+ * sw_ledger_partner, sw_ledger_us, plus the shared sw_custom_cards and
+ * sw_goals. Storage reads happen inside effects so server prerender and
+ * client hydration always agree, and every key stays backward compatible.
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -21,7 +30,7 @@ import { mergeCards } from '../lib/cards/custom';
 import type { CardSpec } from '../lib/cards/types';
 import { CARDS } from '../lib/data/cards';
 import type { PlanJSON } from '../lib/planner/build';
-import type { UserProfile } from '../lib/planner/goalspec';
+import { combineProfiles, type UserProfile } from '../lib/planner/goalspec';
 import { goalNameFromSpec, goalSlug, rateFromAssumptions, type TrackedGoal } from '../lib/planner/progress';
 
 import { Header } from './components/header';
@@ -34,11 +43,11 @@ import {
   DEFAULT_PROFILE,
   DEFAULT_PROMPT,
   GOALS_KEY,
-  LEDGER_KEY,
   MILES_VALUATION_MAX,
   MILES_VALUATION_MIN,
-  PROFILE_KEY,
-  WALLET_KEY,
+  PERSON_SPACE_IDS,
+  SPACE_ACTIVE_KEY,
+  SPACE_IDS,
   clamp,
   currentMonthKey,
   customCardsFromStored,
@@ -47,39 +56,117 @@ import {
   isGoalSpec,
   isLedgerRow,
   isTrackedGoal,
+  ledgerKeyFor,
+  migrateLegacyStorage,
+  profileKeyFor,
   profileFromForm,
+  walletKeyFor,
   type CustomCardStored,
   type LedgerRow,
+  type PersonSpace,
   type PlanResult,
   type ProfileFormState,
+  type SpaceId,
   type TabId,
 } from './components/shared';
 
+/** A stored profile plus its miles valuation, or null when the key is absent. */
+function readStoredProfile(
+  raw: string | null
+): { form: ProfileFormState; milesValuationCents: number } | null {
+  if (raw === null) {
+    return null;
+  }
+  const stored = JSON.parse(raw) as Partial<UserProfile>;
+  const base = defaultProfileForm();
+  return {
+    form: {
+      age: String(stored.age ?? base.age),
+      grossMonthlyIncome: String(stored.grossMonthlyIncome ?? base.grossMonthlyIncome),
+      monthlyExpenses: String(stored.monthlyExpenses ?? base.monthlyExpenses),
+      liquidSavings: String(stored.liquidSavings ?? base.liquidSavings),
+      cpfOaBalance: String(stored.cpfOaBalance ?? base.cpfOaBalance),
+      investmentsSgd:
+        typeof stored.investmentsSgd === 'number' && Number.isFinite(stored.investmentsSgd)
+          ? String(stored.investmentsSgd)
+          : '',
+      investmentRatePct:
+        typeof stored.investmentRatePa === 'number' && Number.isFinite(stored.investmentRatePa)
+          ? String(stored.investmentRatePa * 100)
+          : '',
+    },
+    milesValuationCents:
+      typeof stored.milesValuationCents === 'number' && Number.isFinite(stored.milesValuationCents)
+        ? clamp(stored.milesValuationCents, MILES_VALUATION_MIN, MILES_VALUATION_MAX)
+        : DEFAULT_PROFILE.milesValuationCents,
+  };
+}
+
+function readStringArray(raw: string | null): string[] | null {
+  if (raw === null) {
+    return null;
+  }
+  const ids: unknown = JSON.parse(raw);
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
+function readLedger(raw: string | null): LedgerRow[] | null {
+  if (raw === null) {
+    return null;
+  }
+  const entries: unknown = JSON.parse(raw);
+  return Array.isArray(entries) ? entries.filter(isLedgerRow) : [];
+}
+
+function readSpace(raw: string | null): SpaceId | null {
+  return raw === 'you' || raw === 'partner' || raw === 'us' ? raw : null;
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>('planner');
+  const [activeSpace, setActiveSpace] = useState<SpaceId>('you');
   const [hydrated, setHydrated] = useState(false);
   const [monthKey, setMonthKey] = useState('');
 
-  // Planner tab state.
-  const [profileForm, setProfileForm] = useState<ProfileFormState>(defaultProfileForm);
-  const [milesValuation, setMilesValuation] = useState(DEFAULT_PROFILE.milesValuationCents);
+  // Planner tab state. The prompt and the latest plan are shared across
+  // spaces; the profile forms are per person.
+  const [profileForms, setProfileForms] = useState<Record<PersonSpace, ProfileFormState>>({
+    you: defaultProfileForm(),
+    partner: defaultProfileForm(),
+  });
+  const [milesValuations, setMilesValuations] = useState<Record<PersonSpace, number>>({
+    you: DEFAULT_PROFILE.milesValuationCents,
+    partner: DEFAULT_PROFILE.milesValuationCents,
+  });
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [planResult, setPlanResult] = useState<PlanResult | null>(null);
 
-  // Cards tab state.
-  const [wallet, setWallet] = useState<string[]>([]);
+  // Cards tab state: one wallet and one ledger per space.
+  const [wallets, setWallets] = useState<Record<SpaceId, string[]>>({
+    you: [],
+    partner: [],
+    us: [],
+  });
   const [customStored, setCustomStored] = useState<CustomCardStored[]>([]);
-  const [ledger, setLedger] = useState<LedgerRow[]>([]);
+  const [ledgers, setLedgers] = useState<Record<SpaceId, LedgerRow[]>>({
+    you: [],
+    partner: [],
+    us: [],
+  });
 
-  // Progress tab state.
+  // Progress tab state. Goals carry their own space field.
   const [goals, setGoals] = useState<TrackedGoal[]>([]);
 
   // Hydrate from localStorage after mount so SSR and first render agree.
   useEffect(() => {
     try {
-      // Custom cards first: whether a stored wallet id is still valid depends
+      // Legacy first: the per-space reads below must see pre-couples data
+      // already copied into the you space. Idempotent, deletes nothing.
+      migrateLegacyStorage();
+
+      // Custom cards next: whether a stored wallet id is still valid depends
       // on the merged deck they produce.
       const rawCustom = window.localStorage.getItem(CUSTOM_CARDS_KEY);
       if (rawCustom !== null) {
@@ -88,49 +175,44 @@ export default function Home() {
           setCustomStored(stored.filter(isCustomCardStored));
         }
       }
-      const rawProfile = window.localStorage.getItem(PROFILE_KEY);
-      if (rawProfile !== null) {
-        const stored = JSON.parse(rawProfile) as Partial<UserProfile>;
-        const base = defaultProfileForm();
-        setProfileForm({
-          age: String(stored.age ?? base.age),
-          grossMonthlyIncome: String(stored.grossMonthlyIncome ?? base.grossMonthlyIncome),
-          monthlyExpenses: String(stored.monthlyExpenses ?? base.monthlyExpenses),
-          liquidSavings: String(stored.liquidSavings ?? base.liquidSavings),
-          cpfOaBalance: String(stored.cpfOaBalance ?? base.cpfOaBalance),
-          investmentsSgd:
-            typeof stored.investmentsSgd === 'number' && Number.isFinite(stored.investmentsSgd)
-              ? String(stored.investmentsSgd)
-              : '',
-          investmentRatePct:
-            typeof stored.investmentRatePa === 'number' && Number.isFinite(stored.investmentRatePa)
-              ? String(stored.investmentRatePa * 100)
-              : '',
-        });
-        if (typeof stored.milesValuationCents === 'number' && Number.isFinite(stored.milesValuationCents)) {
-          setMilesValuation(clamp(stored.milesValuationCents, MILES_VALUATION_MIN, MILES_VALUATION_MAX));
+
+      for (const person of PERSON_SPACE_IDS) {
+        const stored = readStoredProfile(window.localStorage.getItem(profileKeyFor(person)));
+        if (stored !== null) {
+          setProfileForms((previous) => ({ ...previous, [person]: stored.form }));
+          setMilesValuations((previous) => ({ ...previous, [person]: stored.milesValuationCents }));
         }
       }
-      const rawWallet = window.localStorage.getItem(WALLET_KEY);
-      if (rawWallet !== null) {
-        const ids: unknown = JSON.parse(rawWallet);
-        if (Array.isArray(ids)) {
-          setWallet(ids.filter((id): id is string => typeof id === 'string'));
+
+      const walletState: Partial<Record<SpaceId, string[]>> = {};
+      for (const space of SPACE_IDS) {
+        const stored = readStringArray(window.localStorage.getItem(walletKeyFor(space)));
+        if (stored !== null) {
+          walletState[space] = stored;
         }
       }
-      const rawLedger = window.localStorage.getItem(LEDGER_KEY);
-      if (rawLedger !== null) {
-        const entries: unknown = JSON.parse(rawLedger);
-        if (Array.isArray(entries)) {
-          setLedger(entries.filter(isLedgerRow));
+      setWallets((previous) => ({ ...previous, ...walletState }));
+
+      const ledgerState: Partial<Record<SpaceId, LedgerRow[]>> = {};
+      for (const space of SPACE_IDS) {
+        const stored = readLedger(window.localStorage.getItem(ledgerKeyFor(space)));
+        if (stored !== null) {
+          ledgerState[space] = stored;
         }
       }
+      setLedgers((previous) => ({ ...previous, ...ledgerState }));
+
       const rawGoals = window.localStorage.getItem(GOALS_KEY);
       if (rawGoals !== null) {
         const stored: unknown = JSON.parse(rawGoals);
         if (Array.isArray(stored)) {
           setGoals(stored.filter(isTrackedGoal));
         }
+      }
+
+      const storedSpace = readSpace(window.localStorage.getItem(SPACE_ACTIVE_KEY));
+      if (storedSpace !== null) {
+        setActiveSpace(storedSpace);
       }
     } catch {
       // Corrupt storage falls back to defaults; nothing to recover here.
@@ -139,27 +221,59 @@ export default function Home() {
     setHydrated(true);
   }, []);
 
+  // The two personal profiles, derived once and reused everywhere: the you
+  // and partner planner forms post them as they are, and the us space plans
+  // on their combination.
+  const youProfile = useMemo(
+    () => profileFromForm(profileForms.you, milesValuations.you),
+    [profileForms.you, milesValuations.you]
+  );
+  const partnerProfile = useMemo(
+    () => profileFromForm(profileForms.partner, milesValuations.partner),
+    [profileForms.partner, milesValuations.partner]
+  );
+  const activeProfile = useMemo<UserProfile>(() => {
+    if (activeSpace === 'partner') {
+      return partnerProfile;
+    }
+    if (activeSpace === 'us') {
+      return combineProfiles(youProfile, partnerProfile);
+    }
+    return youProfile;
+  }, [activeSpace, youProfile, partnerProfile]);
+
   // Persist after hydration so the load effect never fights the save effects.
   useEffect(() => {
     if (!hydrated) {
       return;
     }
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profileFromForm(profileForm, milesValuation)));
-  }, [hydrated, profileForm, milesValuation]);
+    window.localStorage.setItem(profileKeyFor('you'), JSON.stringify(youProfile));
+  }, [hydrated, youProfile]);
 
   useEffect(() => {
     if (!hydrated) {
       return;
     }
-    window.localStorage.setItem(WALLET_KEY, JSON.stringify(wallet));
-  }, [hydrated, wallet]);
+    window.localStorage.setItem(profileKeyFor('partner'), JSON.stringify(partnerProfile));
+  }, [hydrated, partnerProfile]);
 
   useEffect(() => {
     if (!hydrated) {
       return;
     }
-    window.localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger));
-  }, [hydrated, ledger]);
+    for (const space of SPACE_IDS) {
+      window.localStorage.setItem(walletKeyFor(space), JSON.stringify(wallets[space]));
+    }
+  }, [hydrated, wallets]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    for (const space of SPACE_IDS) {
+      window.localStorage.setItem(ledgerKeyFor(space), JSON.stringify(ledgers[space]));
+    }
+  }, [hydrated, ledgers]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -175,28 +289,87 @@ export default function Home() {
     window.localStorage.setItem(GOALS_KEY, JSON.stringify(goals));
   }, [hydrated, goals]);
 
-  const customCards = useMemo(() => customCardsFromStored(customStored), [customStored]);
-  const allCards: CardSpec[] = useMemo(() => mergeCards(CARDS, customCards), [customCards]);
-
-  // Wallet ids that no longer resolve (a custom card was deleted) drop out.
   useEffect(() => {
     if (!hydrated) {
       return;
     }
-    setWallet((previous) => {
-      const valid = previous.filter((id) => allCards.some((card) => card.id === id));
-      return valid.length === previous.length ? previous : valid;
+    window.localStorage.setItem(SPACE_ACTIVE_KEY, activeSpace);
+  }, [hydrated, activeSpace]);
+
+  const customCards = useMemo(() => customCardsFromStored(customStored), [customStored]);
+  const allCards: CardSpec[] = useMemo(() => mergeCards(CARDS, customCards), [customCards]);
+
+  // Wallet ids that no longer resolve (a custom card was deleted) drop out of
+  // every space's wallet.
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    setWallets((previous) => {
+      let changed = false;
+      const next: Record<SpaceId, string[]> = { ...previous };
+      for (const space of SPACE_IDS) {
+        const valid = previous[space].filter((id) => allCards.some((card) => card.id === id));
+        if (valid.length !== previous[space].length) {
+          next[space] = valid;
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
     });
   }, [allCards, hydrated]);
 
+  // In the us space the wallet list stamps each card that already sits in a
+  // personal wallet with its owner. You wins a tie: the household values
+  // things the primary profile's way (combineProfiles does the same for
+  // miles valuation).
+  const ownerById = useMemo<Record<string, 'you' | 'partner'> | undefined>(() => {
+    if (activeSpace !== 'us') {
+      return undefined;
+    }
+    const owners: Record<string, 'you' | 'partner'> = {};
+    for (const id of wallets.partner) {
+      if (!(id in owners)) {
+        owners[id] = 'partner';
+      }
+    }
+    for (const id of wallets.you) {
+      owners[id] = 'you';
+    }
+    return owners;
+  }, [activeSpace, wallets.you, wallets.partner]);
+
   function toggleWallet(id: string): void {
-    setWallet((previous) =>
-      previous.includes(id) ? previous.filter((entry) => entry !== id) : [...previous, id]
-    );
+    const space = activeSpace;
+    setWallets((previous) => {
+      const current = previous[space];
+      return {
+        ...previous,
+        [space]: current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
+      };
+    });
   }
 
   function updateProfileField(field: keyof ProfileFormState, raw: string): void {
-    setProfileForm((previous) => ({ ...previous, [field]: raw }));
+    // Only the you and partner spaces render the editable form.
+    const person: PersonSpace = activeSpace === 'partner' ? 'partner' : 'you';
+    setProfileForms((previous) => ({
+      ...previous,
+      [person]: { ...previous[person], [field]: raw },
+    }));
+  }
+
+  /**
+   * The miles slider edits the active person's valuation. In the us space it
+   * edits you's, because combineProfiles anchors the household's valuation on
+   * the primary profile: move the slider in Us and the You space reflects it.
+   */
+  function changeMilesValuation(value: number): void {
+    const person: PersonSpace = activeSpace === 'partner' ? 'partner' : 'you';
+    setMilesValuations((previous) => ({
+      ...previous,
+      [person]: clamp(value, MILES_VALUATION_MIN, MILES_VALUATION_MAX),
+    }));
   }
 
   function saveCustomCard(draft: CustomCardStored, editingIndex: number | null): void {
@@ -212,25 +385,38 @@ export default function Home() {
   }
 
   function deleteLedgerEntry(ledgerIndex: number): void {
-    setLedger((previous) => previous.filter((_, index) => index !== ledgerIndex));
+    const space = activeSpace;
+    setLedgers((previous) => ({
+      ...previous,
+      [space]: previous[space].filter((_, index) => index !== ledgerIndex),
+    }));
   }
 
   function clearMonth(): void {
-    setLedger((previous) => previous.filter((entry) => entry.monthKey !== monthKey));
+    const space = activeSpace;
+    setLedgers((previous) => ({
+      ...previous,
+      [space]: previous[space].filter((entry) => entry.monthKey !== monthKey),
+    }));
   }
 
   function loadSampleMonth(): void {
     if (monthKey === '') {
       return;
     }
-    setLedger((previous) => [
-      ...previous.filter((entry) => entry.monthKey !== monthKey),
-      ...buildSampleMonth(monthKey),
-    ]);
+    const space = activeSpace;
+    setLedgers((previous) => ({
+      ...previous,
+      [space]: [
+        ...previous[space].filter((entry) => entry.monthKey !== monthKey),
+        ...buildSampleMonth(monthKey),
+      ],
+    }));
   }
 
   function appendLedgerEntry(entry: LedgerRow): void {
-    setLedger((previous) => [...previous, entry]);
+    const space = activeSpace;
+    setLedgers((previous) => ({ ...previous, [space]: [...previous[space], entry] }));
   }
 
   // Progress tab handlers.
@@ -241,7 +427,7 @@ export default function Home() {
     }
     const spec = planResult.goalSpec;
     const plan = planResult.plan;
-    const profile = profileFromForm(profileForm, milesValuation);
+    const profile = activeProfile;
     const schedule = plan.savingsSchedule;
     const lastBalance = schedule.length > 0 ? schedule[schedule.length - 1]?.balance : undefined;
     const name = goalNameFromSpec(spec);
@@ -267,12 +453,16 @@ export default function Home() {
       startSavingsSgd: Math.max(0, profile.liquidSavings),
       deadlineAge,
       startMonthKey: monthKey,
+      space: activeSpace,
       logs: [],
     };
     // Re-tracking the same goal re-baselines it: the old logs belong to the
-    // old starting point.
+    // old starting point. Goal ids only collide within a space, so the same
+    // goal name tracked in You and in Us keeps two separate histories.
     setGoals((previous) => {
-      const existing = previous.findIndex((goal) => goal.id === tracked.id);
+      const existing = previous.findIndex(
+        (goal) => goal.id === tracked.id && (goal.space ?? 'you') === activeSpace
+      );
       if (existing === -1) {
         return [...previous, tracked];
       }
@@ -287,7 +477,13 @@ export default function Home() {
     setGoals((previous) => previous.filter((goal) => goal.id !== goalId));
   }
 
-  function logSavings(goalId: string, logMonthKey: string, contributedSgd: number, note: string): void {
+  function logSavings(
+    goalId: string,
+    logMonthKey: string,
+    contributedSgd: number,
+    note: string,
+    contributor: 'you' | 'partner'
+  ): void {
     setGoals((previous) =>
       previous.map((goal) =>
         goal.id === goalId
@@ -295,7 +491,7 @@ export default function Home() {
               ...goal,
               logs: [
                 ...goal.logs.filter((log) => log.monthKey !== logMonthKey),
-                { monthKey: logMonthKey, contributedSgd, ...(note !== '' ? { note } : {}) },
+                { monthKey: logMonthKey, contributedSgd, contributor, ...(note !== '' ? { note } : {}) },
               ],
             }
           : goal
@@ -306,9 +502,7 @@ export default function Home() {
   function deleteLog(goalId: string, logMonthKey: string): void {
     setGoals((previous) =>
       previous.map((goal) =>
-        goal.id === goalId
-          ? { ...goal, logs: goal.logs.filter((log) => log.monthKey !== logMonthKey) }
-          : goal
+        goal.id === goalId ? { ...goal, logs: goal.logs.filter((log) => log.monthKey !== logMonthKey) } : goal
       )
     );
   }
@@ -326,7 +520,7 @@ export default function Home() {
       const response = await fetch('/api/plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: trimmed, profile: profileFromForm(profileForm, milesValuation) }),
+        body: JSON.stringify({ prompt: trimmed, profile: activeProfile }),
       });
       const data: unknown = await response.json();
       if (!response.ok) {
@@ -352,9 +546,22 @@ export default function Home() {
     }
   }
 
+  function selectSpace(space: SpaceId): void {
+    setActiveSpace(space);
+    // A plan computed against another space's profile must not linger on
+    // screen after the switch; the Plan button is the only replan trigger.
+    setPlanResult(null);
+    setPlanError(null);
+  }
+
   return (
     <>
-      <Header activeTab={activeTab} onSelectTab={setActiveTab} />
+      <Header
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        activeSpace={activeSpace}
+        onSelectSpace={selectSpace}
+      />
       <main className="page">
         <p className="page-intro">
           Deterministic goal planning and credit card routing for Singapore. Illustrative
@@ -364,8 +571,10 @@ export default function Home() {
         {activeTab === 'planner' ? (
           <div role="tabpanel" id="panel-planner" aria-labelledby="tab-planner" className="stack">
             <PlannerTab
-              profileForm={profileForm}
+              space={activeSpace}
+              profileForm={profileForms[activeSpace === 'partner' ? 'partner' : 'you']}
               onProfileField={updateProfileField}
+              householdProfile={activeProfile}
               prompt={prompt}
               onPromptChange={setPrompt}
               planning={planning}
@@ -378,8 +587,9 @@ export default function Home() {
         ) : activeTab === 'progress' ? (
           <div role="tabpanel" id="panel-progress" aria-labelledby="tab-progress" className="stack">
             <DashboardTab
-              goals={goals}
-              profile={profileFromForm(profileForm, milesValuation)}
+              space={activeSpace}
+              goals={goals.filter((goal) => (goal.space ?? 'you') === activeSpace)}
+              profile={activeProfile}
               monthKey={monthKey}
               onDeleteGoal={deleteGoal}
               onLogSavings={logSavings}
@@ -390,20 +600,21 @@ export default function Home() {
         ) : (
           <div role="tabpanel" id="panel-cards" aria-labelledby="tab-cards" className="stack">
             <CardsTab
-              wallet={wallet}
+              wallet={wallets[activeSpace]}
               onToggleWallet={toggleWallet}
               allCards={allCards}
               customStored={customStored}
               onSaveCustom={saveCustomCard}
               onDeleteCustom={deleteCustomCard}
-              ledger={ledger}
+              ledger={ledgers[activeSpace]}
               monthKey={monthKey}
-              milesValuation={milesValuation}
-              onMilesValuationChange={setMilesValuation}
+              milesValuation={activeProfile.milesValuationCents}
+              onMilesValuationChange={changeMilesValuation}
               onDeleteLedgerEntry={deleteLedgerEntry}
               onClearMonth={clearMonth}
               onLoadSampleMonth={loadSampleMonth}
               onAppendEntry={appendLedgerEntry}
+              ownerById={ownerById}
             />
           </div>
         )}

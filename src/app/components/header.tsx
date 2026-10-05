@@ -2,7 +2,9 @@
 
 /**
  * Sticky glass header: wordmark with an indigo square dot, a status pill that
- * fetches /api/status once on mount, and the segmented tab control.
+ * fetches /api/status once on mount, the segmented tab control and, under the
+ * tabs, the space switcher (You, Partner, Us) that decides whose plan the
+ * whole page is showing.
  *
  * The pill never guesses: until the fetch resolves it shows the slate Local
  * mode dot, and only upgrades to the emerald "Nemotron connected" state when
@@ -11,11 +13,13 @@
  */
 import { useEffect, useState } from 'react';
 
-import { isStatusJson, type StatusJson, type TabId } from './shared';
+import { isStatusJson, spaceLabel, type SpaceId, type StatusJson, type TabId } from './shared';
 
 interface HeaderProps {
   activeTab: TabId;
   onSelectTab: (tab: TabId) => void;
+  activeSpace: SpaceId;
+  onSelectSpace: (space: SpaceId) => void;
 }
 
 const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
@@ -24,10 +28,12 @@ const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'cards', label: 'Card Maximizer' },
 ];
 
+const SPACES: ReadonlyArray<SpaceId> = ['you', 'partner', 'us'];
+
 const LOCAL_TITLE =
   'Local mode: every number comes from the deterministic engines. Add NEBIUS_API_KEY to .env.local to enable Nemotron.';
 
-export function Header({ activeTab, onSelectTab }: HeaderProps) {
+export function Header({ activeTab, onSelectTab, activeSpace, onSelectSpace }: HeaderProps) {
   const [status, setStatus] = useState<StatusJson | null>(null);
 
   useEffect(() => {
@@ -87,6 +93,25 @@ export function Header({ activeTab, onSelectTab }: HeaderProps) {
             </button>
           ))}
         </nav>
+        <div className="space-row" role="radiogroup" aria-label="Whose plan">
+          <span className="space-row-label" aria-hidden="true">
+            Whose plan
+          </span>
+          <div className="space-group">
+            {SPACES.map((space) => (
+              <button
+                key={space}
+                type="button"
+                role="radio"
+                aria-checked={activeSpace === space}
+                className={`space-switch ${activeSpace === space ? 'space-switch-on' : ''}`}
+                onClick={() => onSelectSpace(space)}
+              >
+                {spaceLabel(space)}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </header>
   );

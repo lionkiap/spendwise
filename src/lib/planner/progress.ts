@@ -19,6 +19,11 @@ export interface SavingsLog {
   contributedSgd: number;
   /** Optional free-text note. */
   note?: string;
+  /**
+   * Who set the money aside. Absent means 'you', so every log stored before
+   * the couples feature keeps counting toward the primary profile.
+   */
+  contributor?: 'you' | 'partner';
 }
 
 /**
@@ -47,6 +52,13 @@ export interface TrackedGoal {
   deadlineAge: number;
   /** "YYYY-MM" when tracking started. */
   startMonthKey: string;
+  /**
+   * Whose space this goal belongs to: 'you', 'partner' or the shared 'us'.
+   * Absent means 'you', so every goal stored before the couples feature stays
+   * the primary profile's. Purely informational for the UI; no function in
+   * this module branches on it, the math treats all logs alike.
+   */
+  space?: 'you' | 'partner' | 'us';
   /** Monthly savings logs, any order; month keys unique per goal by UI design. */
   logs: SavingsLog[];
 }
@@ -243,4 +255,120 @@ export function chartSeries(goal: TrackedGoal, monthIndex: number, maxPlannedPoi
     actual.push({ month, balance: actualBalance(goal, month) });
   }
   return { planned, actual, totalMonths };
+}
+
+/** Raw logged contributions per contributor inside the elapsed window. */
+export interface ContributorTotals {
+  you: number;
+  partner: number;
+}
+
+/**
+ * Raw sums of logged contributions per contributor over the elapsed window.
+ *
+ * Window rules match actualBalance exactly: a log dated before tracking
+ * started counts (clamped to month zero), a log dated after the queried month
+ * is ignored, and every log contributes its raw contributedSgd with no growth
+ * applied. A log with no contributor field counts as 'you', so pre-couples
+ * history lands entirely in the you bucket. Formula:
+ * totals[c] = sum of log.contributedSgd where log.contributor resolves to c
+ * and 0 <= clampedLogMonth(log) <= max(0, monthIndex).
+ */
+export function contributorTotals(goal: TrackedGoal, monthIndex: number): ContributorTotals {
+  const months = Math.max(0, monthIndex);
+  const totals: ContributorTotals = { you: 0, partner: 0 };
+  for (const log of goal.logs) {
+    const logMonth = Math.max(0, monthKeyDiff(goal.startMonthKey, log.monthKey));
+    if (logMonth > months) {
+      continue;
+    }
+    if (log.contributor === 'partner') {
+      totals.partner += log.contributedSgd;
+    } else {
+      totals.you += log.contributedSgd;
+    }
+  }
+  return totals;
+}
+
+/** One sampled point of a per-contributor balance line. */
+export interface ContributorPoint {
+  month: number;
+  balance: number;
+}
+
+/** Per-contributor chart lines: pot plus that person's contributions. */
+export interface ContributorChartSeries {
+  you: ContributorPoint[];
+  partner: ContributorPoint[];
+}
+
+/**
+ * Balance of one contributor's line at monthIndex: the whole starting pot
+ * grown at the plan's rate, plus only that contributor's logged contributions
+ * each grown from its own month to now. Window rules match actualBalance:
+ * pre-start logs count at month zero, logs after the queried month are
+ * ignored, contributor-less logs belong to 'you'.
+ */
+function contributorBalance(
+  goal: TrackedGoal,
+  contributor: 'you' | 'partner',
+  monthIndex: number
+): number {
+  const months = Math.max(0, monthIndex);
+  let balance = fvLump(goal.startSavingsSgd, goal.ratePa, months / 12);
+  for (const log of goal.logs) {
+    const isPartner = log.contributor === 'partner';
+    if (isPartner !== (contributor === 'partner')) {
+      continue;
+    }
+    const logMonth = Math.max(0, monthKeyDiff(goal.startMonthKey, log.monthKey));
+    if (logMonth > months) {
+      continue;
+    }
+    balance += fvLump(log.contributedSgd, goal.ratePa, (months - logMonth) / 12);
+  }
+  return balance;
+}
+
+/**
+ * Per-contributor actual lines for the chart, honest by construction.
+ *
+ * Semantics: BOTH series start from the same starting pot. Each line at month
+ * m is contributorBalance = fvLump(startSavingsSgd, ratePa, m / 12) plus that
+ * contributor's in-window logs each grown from its own month to m. So each
+ * line reads as "the whole pot as if this person alone had been contributing
+ * alongside the shared pot", and the identity
+ * you[m] + partner[m] - fvLump(startSavingsSgd, ratePa, m / 12)
+ * = actualBalance(goal, m) holds exactly at every sampled month: the two lines
+ * double-count the pot once, and every log belongs to exactly one line. Label
+ * the lines "pot + you" and "pot + partner", never "you's balance" alone.
+ * At a zero rate the subtracted pot is startSavingsSgd itself.
+ *
+ * Sampling: points at months 0, step, 2 * step, ... up to the elapsed month,
+ * where step = max(1, ceil((elapsed + 1) / maxPlannedPoints)) so each array
+ * holds at most maxPlannedPoints + 1 points no matter how long the goal has
+ * run. The final point always lands exactly on max(0, monthIndex), so the end
+ * property above is checkable against actualBalance at that month. Both
+ * series sample the identical months.
+ */
+export function chartSeriesByContributor(
+  goal: TrackedGoal,
+  monthIndex: number,
+  maxPlannedPoints = 60
+): ContributorChartSeries {
+  const elapsed = Math.max(0, monthIndex);
+  const cap = Math.max(1, maxPlannedPoints);
+  const step = Math.max(1, Math.ceil((elapsed + 1) / cap));
+  const months: number[] = [];
+  for (let month = 0; month <= elapsed; month += step) {
+    months.push(month);
+  }
+  if (months[months.length - 1] !== elapsed) {
+    months.push(elapsed);
+  }
+  return {
+    you: months.map((month) => ({ month, balance: contributorBalance(goal, 'you', month) })),
+    partner: months.map((month) => ({ month, balance: contributorBalance(goal, 'partner', month) })),
+  };
 }

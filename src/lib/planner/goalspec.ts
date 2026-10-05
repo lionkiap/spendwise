@@ -89,6 +89,48 @@ export const userProfileSchema = z.object({
 });
 export type UserProfile = z.infer<typeof userProfileSchema>;
 
+/**
+ * Combine two profiles into one household profile for shared ("us") planning.
+ *
+ * Field rules, all pure arithmetic, no rounding:
+ * - grossMonthlyIncome, monthlyExpenses, liquidSavings and cpfOaBalance add:
+ *   combined = you.field + partner.field.
+ * - investmentsSgd adds treating undefined as 0. The result is omitted whenever
+ *   the sum is exactly 0: zero-sum collapses to undefined-on-both, so a
+ *   household where neither partner states a portfolio (0 + 0) or where stated
+ *   portfolios cancel exactly (for example 5,000 + -5,000) reports no
+ *   portfolio at all rather than a misleading investmentsSgd of 0, matching the
+ *   "absent means 0 and behaves exactly like today" convention on the field.
+ *   Any nonzero sum is kept as the plain sum.
+ * - milesValuationCents comes from you: the household values miles at the
+ *   primary profile's cents-per-mile, so card math stays on one valuation.
+ * - investmentRatePa takes you's when set, else partner's, else is omitted so
+ *   downstream code falls back to PLANNER_DEFAULTS.investmentRatePa and shows
+ *   the unstated-rate chip.
+ * - age comes from you: the combined profile stays anchored on the primary
+ *   timeline so deadline ages keep meaning "your age" in every plan built from
+ *   it. (The only field the couples feature deliberately does not sum.)
+ */
+export function combineProfiles(you: UserProfile, partner: UserProfile): UserProfile {
+  const combined: UserProfile = {
+    age: you.age,
+    grossMonthlyIncome: you.grossMonthlyIncome + partner.grossMonthlyIncome,
+    monthlyExpenses: you.monthlyExpenses + partner.monthlyExpenses,
+    liquidSavings: you.liquidSavings + partner.liquidSavings,
+    cpfOaBalance: you.cpfOaBalance + partner.cpfOaBalance,
+    milesValuationCents: you.milesValuationCents,
+  };
+  const investments = (you.investmentsSgd ?? 0) + (partner.investmentsSgd ?? 0);
+  if (investments !== 0) {
+    combined.investmentsSgd = investments;
+  }
+  const rate = you.investmentRatePa ?? partner.investmentRatePa;
+  if (rate !== undefined) {
+    combined.investmentRatePa = rate;
+  }
+  return combined;
+}
+
 /** One number the plan fills in because the prompt left it unknown. */
 export interface Assumption {
   field: string;
