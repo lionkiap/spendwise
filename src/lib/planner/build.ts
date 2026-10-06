@@ -12,6 +12,7 @@ import {
   bsd,
   carLoanLimits,
   downPaymentSplit,
+  employeeCpfContribution,
   flatToEffective,
   fvAnnuity,
   fvLump,
@@ -220,7 +221,16 @@ function resolveDeadlineYears(months: number): number {
   return Math.max(1, Math.round(months / 12));
 }
 
-/** Year rows built entirely from the fvLump and fvAnnuity kernels, with the balance column combining both legs. */
+/**
+ * Year rows built entirely from the fvLump and fvAnnuity kernels, with the
+ * balance column combining both legs.
+ *
+ * Interest semantics: the year-zero baseline is the whole starting pot, the
+ * cash leg pv plus the investments leg, so every interest row is growth only.
+ * interest(year) = balance(year) - baseline(year - 1) - contributions(year)
+ * where baseline(0) = pv + investments. Starting the baseline at 0 instead
+ * would report the entire starting pot as first-year interest.
+ */
 function buildSavingsSchedule(
   pv: number,
   investments: number,
@@ -231,7 +241,7 @@ function buildSavingsSchedule(
 ): SavingsScheduleRow[] {
   const years = Math.max(1, Math.ceil(months / 12));
   const rows: SavingsScheduleRow[] = [];
-  let previousBalance = 0;
+  let previousBalance = pv + investments;
   for (let year = 1; year <= years; year += 1) {
     const monthsElapsed = Math.min(year * 12, months);
     const balance =
@@ -299,12 +309,72 @@ function remainingTargetSgd(core: SavingsCore, ratePa: number): number {
   return core.targetSgd - fvLump(core.investmentsSgd, core.investmentRatePa + delta, core.months / 12);
 }
 
+/**
+ * The spendable surplus the affordability verdict measures saving against.
+ * Formula: surplus = (takeHomeMonthlyIncome ?? grossMonthlyIncome
+ *   - employeeCpfContribution(grossMonthlyIncome)) - monthlyExpenses
+ *   - (monthlyDebtCommitments ?? 0).
+ * When no take-home figure is stated, the employee CPF share of ordinary
+ * wages is deducted first because that money never reaches the account the
+ * saving must come from; MSR and TDSR checks stay on gross income elsewhere.
+ */
+interface SpendableCapacity {
+  /** Dollars a month left after expenses and debt commitments. */
+  surplus: number;
+  /** Short headline suffix naming the deductions that bit, '' when none did. */
+  headlineSuffix: string;
+  /** Parenthesised basis of the surplus for the verdict reasoning. */
+  surplusBasis: string;
+  /** Sentence naming each biting deduction with its amount, null when none bit. */
+  deductionSentence: string | null;
+}
+
+function spendableCapacity(profile: UserProfile): SpendableCapacity {
+  const cpfDeduction = employeeCpfContribution(profile.grossMonthlyIncome);
+  const takeHomeStated = profile.takeHomeMonthlyIncome !== undefined;
+  const cpfBites = !takeHomeStated && cpfDeduction > 0;
+  const debts = profile.monthlyDebtCommitments ?? 0;
+  const debtsBite = debts > 0;
+  const takeHome = profile.takeHomeMonthlyIncome ?? profile.grossMonthlyIncome - cpfDeduction;
+  const surplus = takeHome - profile.monthlyExpenses - debts;
+
+  const names: string[] = [];
+  if (cpfBites) {
+    names.push('CPF');
+  }
+  if (debtsBite) {
+    names.push('debts');
+  }
+  const headlineSuffix = names.length > 0 ? ` after ${names.join(' and ')}` : '';
+
+  const basisParts = [
+    takeHomeStated ? 'stated take-home pay' : cpfBites ? 'take-home pay after CPF' : 'gross income',
+    'minus expenses',
+  ];
+  if (debtsBite) {
+    basisParts.push('minus monthly debt commitments');
+  }
+  const surplusBasis = `(${basisParts.join(', ')})`;
+
+  const deductions: string[] = [];
+  if (cpfBites) {
+    deductions.push(`CPF contributions of ${fmtSgd(cpfDeduction)} a month`);
+  }
+  if (debtsBite) {
+    deductions.push(`monthly debt commitments of ${fmtSgd(debts)}`);
+  }
+  const deductionSentence =
+    deductions.length > 0 ? `The surplus already nets off ${deductions.join(' and ')}.` : null;
+
+  return { surplus, headlineSuffix, surplusBasis, deductionSentence };
+}
+
 function verdictStatus(requiredMonthly: number, profile: UserProfile): VerdictStatus {
-  const discretionary = profile.grossMonthlyIncome - profile.monthlyExpenses;
-  if (requiredMonthly <= discretionary) {
+  const surplus = spendableCapacity(profile).surplus;
+  if (requiredMonthly <= surplus) {
     return 'achievable';
   }
-  if (discretionary > 0 && requiredMonthly <= discretionary * 1.3) {
+  if (surplus > 0 && requiredMonthly <= surplus * 1.3) {
     return 'stretch';
   }
   return 'not_achievable';
@@ -317,24 +387,25 @@ function buildVerdict(
   extraReasons: ReadonlyArray<string>,
   goalNoun: string
 ): PlanVerdict {
-  const discretionary = profile.grossMonthlyIncome - profile.monthlyExpenses;
+  const { surplus, headlineSuffix, surplusBasis, deductionSentence } = spendableCapacity(profile);
   let headline: string;
   if (status === 'achievable') {
     headline =
       core.requiredMonthly <= 0
         ? `Achievable: your existing savings already cover the ${goalNoun} goal.`
-        : `Achievable: ${fmtSgd(core.requiredMonthly)} a month fits inside your ${fmtSgd(discretionary)} monthly surplus.`;
+        : `Achievable: ${fmtSgd(core.requiredMonthly)} a month fits inside your ${fmtSgd(surplus)} monthly surplus${headlineSuffix}.`;
   } else if (status === 'stretch') {
-    headline = `Stretch: ${fmtSgd(core.requiredMonthly)} a month is within 30 percent above your ${fmtSgd(discretionary)} surplus.`;
-  } else if (discretionary <= 0) {
-    headline = `Not achievable yet: your expenses exceed your income and the ${goalNoun} goal needs ${fmtSgd(core.requiredMonthly)} a month.`;
+    headline = `Stretch: ${fmtSgd(core.requiredMonthly)} a month is within 30 percent above your ${fmtSgd(surplus)} surplus${headlineSuffix}.`;
+  } else if (surplus <= 0) {
+    headline = `Not achievable yet: no surplus is left each month${headlineSuffix} and the ${goalNoun} goal needs ${fmtSgd(core.requiredMonthly)} a month.`;
   } else {
-    headline = `Not achievable yet: ${fmtSgd(core.requiredMonthly)} a month is more than 130 percent of your ${fmtSgd(discretionary)} surplus.`;
+    headline = `Not achievable yet: ${fmtSgd(core.requiredMonthly)} a month is more than 130 percent of your ${fmtSgd(surplus)} surplus${headlineSuffix}.`;
   }
   const parts = [
     core.requiredMonthly <= 0
       ? 'Existing savings already reach the target so no new monthly saving is required.'
-      : `Reaching the goal needs ${fmtSgd(core.requiredMonthly)} of saving every month against a disposable surplus of ${fmtSgd(discretionary)} (income minus expenses).`,
+      : `Reaching the goal needs ${fmtSgd(core.requiredMonthly)} of saving every month against a spendable surplus of ${fmtSgd(surplus)} ${surplusBasis}.`,
+    ...(deductionSentence === null ? [] : [deductionSentence]),
     ...extraReasons,
   ];
   return { status, headline, reasoning: parts.join(' ') };
@@ -412,17 +483,21 @@ function buildTeaching(
   const investmentsFv = fvLump(core.investmentsSgd, core.investmentRatePa, core.months / 12);
   const investmentSentence =
     core.investmentsSgd > 0
-      ? ` Your ${fmtSgd(core.investmentsSgd)} investment portfolio compounding at ${fmtRate(core.investmentRatePa)} is projected to reach ${fmtSgd(investmentsFv)} by the deadline, already covering ${
+      ? ` Our ${fmtSgd(core.investmentsSgd)} investment portfolio compounding at ${fmtRate(core.investmentRatePa)} is projected to reach ${fmtSgd(investmentsFv)} by the deadline, already covering ${
           extras.nominalTargetSgd > 0 && investmentsFv < extras.nominalTargetSgd
             ? `${trimZeros(((investmentsFv / extras.nominalTargetSgd) * 100).toFixed(0))} percent of the ${fmtSgd(extras.nominalTargetSgd)} goal`
             : `the whole ${fmtSgd(extras.nominalTargetSgd)} goal`
         }.`
       : '';
+  // Advisory only: the reserve never changes the savings math, it just tells
+  // the saver to keep a cushion instead of locking every dollar into the goal.
+  const reserveMonths = profile.emergencyReserveMonths ?? PLANNER_DEFAULTS.emergencyReserveMonths;
+  const reserveSentence = ` Before locking every dollar in, hold an emergency reserve of ${reserveMonths} months of expenses as a cushion so an unexpected bill never forces you to break the compounding.`;
 
   const points: TeachingPoint[] = [
     {
       title: 'Compounding works while you wait',
-      body: `Over ${fmtYears(years)} the plan contributes ${fmtSgd(contributionsTotal)} and compounding at ${fmtRate(core.ratePa)} a year adds ${fmtSgd(interestTotal)} of interest on top. Time in the market is the one input you cannot top up later.${investmentSentence}`,
+      body: `Over ${fmtYears(years)} the plan contributes ${fmtSgd(contributionsTotal)} and compounding at ${fmtRate(core.ratePa)} a year adds ${fmtSgd(interestTotal)} of interest on top. Time in the market is the one input you cannot top up later.${investmentSentence}${reserveSentence}`,
     },
     {
       title: 'Inflation shrinks real value',

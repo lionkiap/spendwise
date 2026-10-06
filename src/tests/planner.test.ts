@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { bsd, downPaymentSplit, fvAnnuity, fvLump, legalFeesEstimate, oaProjection, pmtForFv } from '../lib/kernels';
+import {
+  bsd,
+  downPaymentSplit,
+  employeeCpfContribution,
+  fvAnnuity,
+  fvLump,
+  legalFeesEstimate,
+  oaProjection,
+  pmtForFv,
+} from '../lib/kernels';
 import { chatJson, isConfigured } from '../lib/nebius';
 import { buildPlan } from '../lib/planner/build';
 import { PLANNER_DEFAULTS, type GoalSpec, type UserProfile } from '../lib/planner/goalspec';
@@ -222,21 +231,31 @@ describe('buildPlan verdicts', () => {
   it('is achievable for a high income profile', () => {
     const highEarner: UserProfile = { ...baseProfile, grossMonthlyIncome: 12_000, monthlyExpenses: 3000 };
     const plan = buildPlan(goal, highEarner, assumptions);
+    // Recomputed spendable surplus: 12,000 gross - 1,200 CPF (20 percent of
+    // the 6,000 ceiling) - 3,000 expenses = 7,800 >= the 4,278.10 required.
     expect(plan.verdict.status).toBe('achievable');
   });
 
   it('is not_achievable for a near zero income profile', () => {
     const barelyEarns: UserProfile = { ...baseProfile, grossMonthlyIncome: 400, monthlyExpenses: 250 };
     const plan = buildPlan(goal, barelyEarns, assumptions);
+    // Recomputed spendable surplus: 400 - 80 CPF - 250 expenses = 70.
     expect(plan.verdict.status).toBe('not_achievable');
   });
 
-  it('is stretch for a required monthly saving just above the surplus', () => {
-    // Required monthly is about 4393 for this goal regardless of income, so a
-    // surplus of 3800 puts it between 1.0x and 1.3x of the surplus.
-    const middling: UserProfile = { ...baseProfile, grossMonthlyIncome: 6000, monthlyExpenses: 2200 };
+  it('is stretch for a required monthly saving just above the spendable surplus', () => {
+    // Recomputed for the spendable-income verdict: required monthly is
+    // 4278.10 for this goal regardless of income (kernel chain: 195,400
+    // upfront stack minus 16,167 projected CPF OA = 179,233 cash needed,
+    // pmtForFv over 36 months at 1.8 percent from a 20,000 pot). A stated
+    // take-home of 5,000 minus 800 expenses leaves a spendable surplus of
+    // 4,200, and 4,200 < 4,278.10 <= 1.3 x 4,200 = 5,460, so the verdict is
+    // stretch. (The old test used gross 6,000 minus 2,200 expenses = 3,800,
+    // which no longer bounds the verdict now the surplus is spendable.)
+    const middling: UserProfile = { ...baseProfile, takeHomeMonthlyIncome: 5_000, monthlyExpenses: 800 };
     const plan = buildPlan(goal, middling, assumptions);
-    const surplus = middling.grossMonthlyIncome - middling.monthlyExpenses;
+    const surplus = (middling.takeHomeMonthlyIncome ?? 0) - middling.monthlyExpenses;
+    expect(surplus).toBe(4_200);
     expect(plan.requiredMonthlySavings).toBeGreaterThan(surplus);
     expect(plan.requiredMonthlySavings).toBeLessThanOrEqual(surplus * 1.3);
     expect(plan.verdict.status).toBe('stretch');
@@ -432,6 +451,142 @@ describe('enrichPlanNarrative', () => {
       expect(enriched.scenarioGrid).toEqual(plan.scenarioGrid);
       expect(enriched.assumptions).toEqual(plan.assumptions);
     });
+  });
+});
+
+describe('savings schedule interest semantics', () => {
+  const goal: GoalSpec = { kind: 'savings_target', targetAmountSgd: 100_000, deadlineAge: 35, instrumentRatePa: 0.018 };
+
+  it('reports first-year interest as growth only, never the starting pot', () => {
+    const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+    const pmt = plan.requiredMonthlySavings;
+    const row = plan.savingsSchedule[0];
+    // Hand formula: year-one interest = kernel-grown pot + kernel-grown
+    // contributions - the pot - the contributions. With the S$20,000 pot at
+    // 1.8 percent that is 363.02 of pot growth plus annuity growth = 420.59.
+    const expected =
+      fvLump(baseProfile.liquidSavings, 0.018, 1) +
+      fvAnnuity(pmt, 0.018, 12) -
+      baseProfile.liquidSavings -
+      12 * pmt;
+    expect(row?.year).toBe(1);
+    expect(row?.interest).toBeCloseTo(expected, 6);
+    // Regression: the old zero baseline reported the whole pot (about
+    // S$20,420) as first-year interest; growth only is a few hundred.
+    expect(row?.interest).toBeLessThan(baseProfile.liquidSavings * 0.1);
+    expect(Math.abs((row?.interest ?? 0) - baseProfile.liquidSavings)).toBeGreaterThan(
+      baseProfile.liquidSavings * 0.5
+    );
+  });
+
+  it('excludes both starting legs, cash and investments, from the interest rows', () => {
+    const investor: UserProfile = { ...baseProfile, investmentsSgd: 20_000 };
+    const plan = buildPlan(goal, investor, fillAssumptions(goal, investor));
+    const pmt = plan.requiredMonthlySavings;
+    const row = plan.savingsSchedule[0];
+    // Baseline is the cash pot plus the investments leg, so the interest row
+    // counts only growth: cash at 1.8 percent, portfolio at the 4.5 default,
+    // contributions at 1.8 percent, minus the 40,000 starting legs.
+    const expected =
+      fvLump(20_000, 0.018, 1) +
+      fvLump(20_000, 0.045, 1) +
+      fvAnnuity(pmt, 0.018, 12) -
+      40_000 -
+      12 * pmt;
+    expect(row?.interest).toBeCloseTo(expected, 6);
+    expect(row?.interest).toBeLessThan(2_000);
+  });
+
+  it('keeps starting legs plus contributions plus interest equal to the final balance', () => {
+    const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+    const rows = plan.savingsSchedule;
+    const contributions = rows.reduce((sum, entry) => sum + entry.contributions, 0);
+    const interest = rows.reduce((sum, entry) => sum + entry.interest, 0);
+    const finalBalance = rows[rows.length - 1]?.balance ?? 0;
+    expect(contributions + interest + baseProfile.liquidSavings).toBeCloseTo(finalBalance, 6);
+  });
+});
+
+describe('spendable income affordability', () => {
+  const goal: GoalSpec = { kind: 'savings_target', targetAmountSgd: 100_000, deadlineAge: 35 };
+
+  it('computes employee CPF as 20 percent of ordinary wages capped at the 6000 ceiling', () => {
+    expect(employeeCpfContribution(3_000)).toBeCloseTo(600, 9);
+    expect(employeeCpfContribution(6_000)).toBeCloseTo(1_200, 9);
+    expect(employeeCpfContribution(6_001)).toBeCloseTo(1_200, 9);
+    expect(employeeCpfContribution(20_000)).toBeCloseTo(1_200, 9);
+    expect(employeeCpfContribution(0)).toBe(0);
+  });
+
+  it('derives take-home by deducting CPF at the ceiling and names it in the verdict', () => {
+    const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+    // 6,000 gross - 1,200 CPF - 2,500 expenses = 2,300 spendable against a
+    // required 578.96, so achievable with the deduction named.
+    expect(plan.verdict.status).toBe('achievable');
+    expect(plan.verdict.headline).toContain('after CPF');
+    expect(plan.verdict.reasoning).toContain('take-home pay after CPF');
+    expect(plan.verdict.reasoning).toContain('CPF contributions of $1,200 a month');
+    expect(plan.verdict.reasoning).toContain('$2,300');
+  });
+
+  it('uses a stated take-home figure instead of deducting CPF', () => {
+    const stated: UserProfile = { ...baseProfile, takeHomeMonthlyIncome: 5_000 };
+    const plan = buildPlan(goal, stated, fillAssumptions(goal, stated));
+    // 5,000 stated take-home - 2,500 expenses = 2,500 spendable, no CPF line.
+    expect(plan.verdict.status).toBe('achievable');
+    expect(plan.verdict.headline).not.toContain('after CPF');
+    expect(plan.verdict.reasoning).toContain('stated take-home pay');
+    expect(plan.verdict.reasoning).toContain('$2,500');
+    expect(plan.verdict.reasoning).not.toContain('nets off CPF');
+  });
+
+  it('subtracts monthly debt commitments and names them next to CPF', () => {
+    const indebted: UserProfile = { ...baseProfile, monthlyDebtCommitments: 1_900 };
+    const plan = buildPlan(goal, indebted, fillAssumptions(goal, indebted));
+    // 2,300 spendable before debts - 1,900 debts = 400, and 1.3 x 400 = 520
+    // is below the 578.96 required, so not achievable.
+    expect(plan.verdict.status).toBe('not_achievable');
+    expect(plan.verdict.headline).toContain('after CPF and debts');
+    expect(plan.verdict.reasoning).toContain('monthly debt commitments of $1,900');
+  });
+
+  it('keeps MSR and TDSR on gross income while the verdict uses spendable income', () => {
+    const propertyGoal: GoalSpec = {
+      kind: 'property_purchase',
+      propertyType: 'hdb_resale',
+      targetPriceSgd: 600_000,
+      deadlineAge: 28,
+      firstProperty: true,
+    };
+    const profile: UserProfile = { ...baseProfile, grossMonthlyIncome: 12_000, monthlyDebtCommitments: 1_500 };
+    const plan = buildPlan(propertyGoal, profile, fillAssumptions(propertyGoal, profile));
+    // MSR and TDSR ratios divide the installment by the 12,000 gross figure.
+    expect(plan.debt?.msr.ratio).toBeCloseTo(
+      (plan.debt?.concessionary.monthlyInstallment ?? 0) / 12_000,
+      9
+    );
+    expect(plan.debt?.tdsr.ratio).toBeCloseTo(
+      (plan.debt?.concessionary.monthlyInstallment ?? 0) / 12_000,
+      9
+    );
+    // The verdict surplus instead nets off CPF (1,200 at the ceiling) and the
+    // 1,500 debts from take-home: 12,000 - 1,200 - 2,500 - 1,500 = 6,800.
+    expect(plan.verdict.headline).toContain('after CPF and debts');
+    expect(plan.verdict.reasoning).toContain('$6,800');
+    expect(plan.verdict.reasoning).toContain('monthly debt commitments of $1,500');
+  });
+
+  it('teaches the emergency reserve from the profile value without touching the math', () => {
+    const plan = buildPlan(goal, baseProfile, fillAssumptions(goal, baseProfile));
+    const cushioned: UserProfile = { ...baseProfile, emergencyReserveMonths: 6 };
+    const plan6 = buildPlan(goal, cushioned, fillAssumptions(goal, cushioned));
+    expect(plan.teaching[0]?.body).toContain('emergency reserve of 3 months of expenses');
+    expect(plan6.teaching[0]?.body).toContain('emergency reserve of 6 months of expenses');
+    expect(plan6.teaching).toHaveLength(plan.teaching.length);
+    // Advisory only: the savings math is byte-identical.
+    expect(plan6.requiredMonthlySavings).toBe(plan.requiredMonthlySavings);
+    expect(plan6.savingsSchedule).toEqual(plan.savingsSchedule);
+    expect(plan6.scenarioGrid).toEqual(plan.scenarioGrid);
   });
 });
 

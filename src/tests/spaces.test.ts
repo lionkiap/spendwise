@@ -116,6 +116,65 @@ describe('combineProfiles', () => {
         combineProfiles(makeProfile({ investmentsSgd: 5_000 }), makeProfile({ investmentsSgd: -5_000 }))
     ).toBe(false);
   });
+
+  it('sums monthlyDebtCommitments treating undefined as 0 and omits an exact zero', () => {
+    // 500 + 300 = 800.
+    expect(
+      combineProfiles(
+        makeProfile({ monthlyDebtCommitments: 500 }),
+        makeProfile({ monthlyDebtCommitments: 300 })
+      ).monthlyDebtCommitments
+    ).toBe(800);
+    // undefined counts as 0: 0 + 400 = 400.
+    expect(
+      combineProfiles(makeProfile(), makeProfile({ monthlyDebtCommitments: 400 })).monthlyDebtCommitments
+    ).toBe(400);
+    // Both unstated: 0 + 0, omitted entirely.
+    expect('monthlyDebtCommitments' in combineProfiles(makeProfile(), makeProfile())).toBe(false);
+    // Zero-sum collapses to undefined-on-both: 250 + -250 = 0, omitted.
+    expect(
+      'monthlyDebtCommitments' in
+        combineProfiles(
+          makeProfile({ monthlyDebtCommitments: 250 }),
+          makeProfile({ monthlyDebtCommitments: -250 })
+        )
+    ).toBe(false);
+  });
+
+  it('takes the max emergency reserve, defaulting an unstated side to 3', () => {
+    expect(
+      combineProfiles(makeProfile({ emergencyReserveMonths: 6 }), makeProfile()).emergencyReserveMonths
+    ).toBe(6);
+    // max(2, 5) = 5.
+    expect(
+      combineProfiles(
+        makeProfile({ emergencyReserveMonths: 2 }),
+        makeProfile({ emergencyReserveMonths: 5 })
+      ).emergencyReserveMonths
+    ).toBe(5);
+    // max(2, default 3) = 3: the household never holds less than the default.
+    expect(
+      combineProfiles(makeProfile({ emergencyReserveMonths: 2 }), makeProfile()).emergencyReserveMonths
+    ).toBe(3);
+    // Both unstated: omitted so the default keeps applying downstream.
+    expect('emergencyReserveMonths' in combineProfiles(makeProfile(), makeProfile())).toBe(false);
+  });
+
+  it('sums takeHomeMonthlyIncome only when both partners state it', () => {
+    expect(
+      combineProfiles(
+        makeProfile({ takeHomeMonthlyIncome: 4_000 }),
+        makeProfile({ takeHomeMonthlyIncome: 3_000 })
+      ).takeHomeMonthlyIncome
+    ).toBe(7_000);
+    // One side only: omitted so the planner derives household take-home from
+    // summed gross instead of mixing a stated figure with a derived one.
+    expect(
+      'takeHomeMonthlyIncome' in
+        combineProfiles(makeProfile({ takeHomeMonthlyIncome: 4_000 }), makeProfile())
+    ).toBe(false);
+    expect('takeHomeMonthlyIncome' in combineProfiles(makeProfile(), makeProfile())).toBe(false);
+  });
 });
 
 describe('contributorTotals', () => {

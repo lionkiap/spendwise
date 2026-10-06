@@ -55,3 +55,19 @@ export function opportunityCostOfCpf(
   const months = Math.round(yearsToDepletion * 12);
   return amountDrawn * (Math.pow(1 + rate / 12, months) - 1);
 }
+
+/**
+ * Employee share of the CPF contribution on a gross monthly salary.
+ * Formula: contribution = 0.20 * min(grossMonthlyIncome, 6000)
+ *
+ * Snapshot of the ordinary-wage rules the planner models: the employee
+ * contributes 20 percent of ordinary wages, and only wages up to the CPF
+ * ordinary-wage ceiling of 6,000 SGD a month attract contributions. The Board
+ * revises both the share by age band and the ceiling over time, so re-verify
+ * against cpf.gov.sg before production or advisory use. The employer share is
+ * deliberately excluded: it never passes through the saver's bank account, so
+ * it does not reduce the cash available to save.
+ */
+export function employeeCpfContribution(grossMonthlyIncome: number): number {
+  return 0.2 * Math.min(grossMonthlyIncome, 6_000);
+}

@@ -135,6 +135,33 @@ textarea {
   line-height: 1.6;
 }
 
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-2) 0;
+}
+
+.footer-report {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  flex: 1 1 240px;
+}
+
+/* Visually hidden but still focusable file input behind the Import button. */
+.footer-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 /* ---------- Masthead ---------- */
 
 .site-header {
@@ -203,6 +230,13 @@ textarea {
   background: var(--leaf-soft);
 }
 
+/* Key present but health check unverified: ochre, between slate and green. */
+.status-pill-warn {
+  border-color: var(--ochre);
+  color: var(--ochre);
+  background: var(--ochre-soft);
+}
+
 .status-dot {
   width: 7px;
   height: 7px;
@@ -218,6 +252,11 @@ textarea {
 .status-dot-on {
   background: var(--leaf);
   border: 1px solid var(--forest);
+}
+
+.status-dot-warn {
+  background: #d9a94e;
+  border: 1px solid var(--ochre);
 }
 
 /* Index-file tabs */
@@ -2377,6 +2416,35 @@ textarea {
   outline-offset: -2px;
 }
 
+/* Contributor stamp in the savings log table of a shared goal: the same
+   you-forest / partner-brick vocabulary as the owner badges and the chart. */
+.contributor-stamp {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 2px 5px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.contributor-stamp-you {
+  border-color: var(--forest);
+  color: var(--forest);
+  background: var(--leaf-soft);
+}
+
+.contributor-stamp-partner {
+  border-color: var(--brick);
+  color: var(--brick);
+  background: var(--brick-soft);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Us-space chart: the partner's actual line and dots in brick            */
 /* ---------------------------------------------------------------------- */
@@ -2480,4 +2548,176 @@ textarea {
   border-color: var(--brick);
   color: var(--brick);
   background: var(--brick-soft);
+}
+
+/* ---------------------------------------------------------------------- */
+/* What-if advisor: print transcript, no chat bubbles                      */
+/* ---------------------------------------------------------------------- */
+
+.advisor-log {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
+
+.advisor-exchange {
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.advisor-exchange:last-child {
+  border-bottom: none;
+}
+
+.advisor-line {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+}
+
+.advisor-line-role {
+  flex: 0 0 64px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.advisor-line-body {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.advisor-line-user .advisor-line-body {
+  color: var(--ink);
+}
+
+.advisor-questions {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.advisor-questions li {
+  margin-bottom: 3px;
+}
+
+.advisor-summary {
+  margin: 0;
+}
+
+/* Before-and-after comparison block of a revise turn */
+
+.advisor-revise {
+  margin-top: var(--space-2);
+}
+
+.advisor-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper-deep);
+  padding: var(--space-3);
+}
+
+.advisor-diff-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.advisor-diff-head {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 5px;
+}
+
+.advisor-diff-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.advisor-comparison {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.advisor-note {
+  margin: 0 0 var(--space-2);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  border-left: 3px solid var(--ochre);
+  padding-left: 10px;
+}
+
+.advisor-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+/* Input row and starter chips */
+
+.advisor-form {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.advisor-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 0.95rem;
+  padding: 9px 11px;
+  transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.advisor-input:focus {
+  outline: none;
+  border-color: var(--forest);
+  box-shadow: var(--focus-ring);
+}
+
+.advisor-input:disabled {
+  background: var(--paper-deep);
+  color: var(--muted);
+}
+
+.advisor-chips {
+  margin-top: var(--space-2);
+}
+
+.advisor-chips .example-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Guided sample journey intro card                                        */
+/* ---------------------------------------------------------------------- */
+
+.journey-intro .action-list li {
+  line-height: 1.65;
+  margin-bottom: var(--space-1);
 }

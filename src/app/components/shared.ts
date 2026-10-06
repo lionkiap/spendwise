@@ -11,9 +11,16 @@
 import { CARDS } from '../../lib/data/cards';
 import type { CardSpec, ExpenseCategory, LedgerEntry } from '../../lib/cards/types';
 import { parseCustomCard } from '../../lib/cards/custom';
-import type { PlanJSON } from '../../lib/planner/build';
-import { goalSpecSchema, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
-import type { TrackedGoal } from '../../lib/planner/progress';
+import { buildPlan, type PlanJSON, type VerdictStatus } from '../../lib/planner/build';
+import { combineProfiles, goalSpecSchema, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
+import { fillAssumptions } from '../../lib/planner/parse';
+import {
+  goalNameFromSpec,
+  goalSlug,
+  monthKeyOffset,
+  rateFromAssumptions,
+  type TrackedGoal,
+} from '../../lib/planner/progress';
 
 /* ---------------------------------------------------------------------- */
 /* localStorage keys. v4 splits storage into three spaces: you, partner   */
@@ -126,6 +133,10 @@ export interface ProfileFormState {
   cpfOaBalance: string;
   investmentsSgd: string;
   investmentRatePct: string;
+  /** Optional affordability fields; empty means "not provided". */
+  takeHomeMonthlyIncome: string;
+  monthlyDebtCommitments: string;
+  emergencyReserveMonths: string;
 }
 
 export interface PlanResult {
@@ -138,6 +149,12 @@ export interface PlanResult {
 /** Shape of GET /api/status. */
 export interface StatusJson {
   nebiusConfigured: boolean;
+  /**
+   * Live connection truth from the server: 'verified' means a health check on
+   * Nebius succeeded, 'configured' means a key exists but the check did not
+   * complete, 'unconfigured' means no key exists.
+   */
+  connection: 'verified' | 'configured' | 'unconfigured';
   models: { ultra: string; super: string; nano: string };
 }
 
@@ -201,6 +218,28 @@ export function fmtAssumptionValue(field: string, value: number): string {
   return fmtMoney(value);
 }
 
+/**
+ * Friendly labels for the assumption chips, keyed by the raw field name the
+ * planner emits. Unknown fields fall back to the raw name; the chips keep the
+ * raw field as the title attribute so the technical name is always one hover
+ * away.
+ */
+export const ASSUMPTION_LABELS: Readonly<Record<string, string>> = {
+  instrumentRatePa: 'Savings growth rate',
+  mortgageStressRatePa: 'Mortgage stress-test rate',
+  hdbConcessionaryRatePa: 'HDB loan rate',
+  renovationBufferSgd: 'Renovation buffer',
+  inflationPa: 'Inflation',
+  deadlineAge: 'Target age',
+  investmentRatePa: 'Investment return',
+  priceSgd: 'Assumed price',
+};
+
+/** Chip label for an assumption field: friendly when known, raw otherwise. */
+export function assumptionLabel(field: string): string {
+  return ASSUMPTION_LABELS[field] ?? field;
+}
+
 export function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
@@ -226,6 +265,9 @@ export function profileFromForm(
 ): UserProfile {
   const investmentsSgd = optionalNumberFrom(form.investmentsSgd);
   const investmentRatePa = optionalNumberFrom(form.investmentRatePct);
+  const takeHomeMonthlyIncome = optionalNumberFrom(form.takeHomeMonthlyIncome);
+  const monthlyDebtCommitments = optionalNumberFrom(form.monthlyDebtCommitments);
+  const emergencyReserveMonths = optionalNumberFrom(form.emergencyReserveMonths);
   return {
     age: numberFrom(form.age),
     grossMonthlyIncome: numberFrom(form.grossMonthlyIncome),
@@ -236,6 +278,10 @@ export function profileFromForm(
     ...(investmentsSgd !== undefined ? { investmentsSgd } : {}),
     // The form speaks percent per year; the planner wants the decimal ratio.
     ...(investmentRatePa !== undefined ? { investmentRatePa: investmentRatePa / 100 } : {}),
+    // Affordability fields: absent means the planner derives or defaults them.
+    ...(takeHomeMonthlyIncome !== undefined ? { takeHomeMonthlyIncome } : {}),
+    ...(monthlyDebtCommitments !== undefined ? { monthlyDebtCommitments } : {}),
+    ...(emergencyReserveMonths !== undefined ? { emergencyReserveMonths } : {}),
   };
 }
 
@@ -248,6 +294,9 @@ export function defaultProfileForm(): ProfileFormState {
     cpfOaBalance: String(DEFAULT_PROFILE.cpfOaBalance),
     investmentsSgd: '',
     investmentRatePct: '',
+    takeHomeMonthlyIncome: '',
+    monthlyDebtCommitments: '',
+    emergencyReserveMonths: '',
   };
 }
 
@@ -304,6 +353,9 @@ export function isStatusJson(value: unknown): value is StatusJson {
   const models = status.models;
   return (
     typeof status.nebiusConfigured === 'boolean' &&
+    (status.connection === 'verified' ||
+      status.connection === 'configured' ||
+      status.connection === 'unconfigured') &&
     models !== null &&
     typeof models === 'object' &&
     typeof (models as Record<string, unknown>).ultra === 'string' &&
@@ -318,6 +370,48 @@ export function isGoalSpec(value: unknown): value is GoalSpec {
 }
 
 const MONTH_KEY_PATTERN = /^\d{4}-\d{2}$/;
+
+/** Profile fields that must be finite numbers when present at all. */
+const PROFILE_REQUIRED_NUMBER_FIELDS: ReadonlyArray<string> = [
+  'age',
+  'grossMonthlyIncome',
+  'monthlyExpenses',
+  'liquidSavings',
+  'cpfOaBalance',
+  'milesValuationCents',
+];
+
+/** Optional UserProfile fields: absent is fine, present must be a finite number. */
+const PROFILE_OPTIONAL_NUMBER_FIELDS: ReadonlyArray<string> = [
+  'investmentsSgd',
+  'investmentRatePa',
+  'takeHomeMonthlyIncome',
+  'monthlyDebtCommitments',
+  'emergencyReserveMonths',
+];
+
+/**
+ * Sane-shape guard for a stored profile payload (the JSON the app writes under
+ * sw_profile_you / sw_profile_partner). Every required field must be a finite
+ * number and every optional affordability or portfolio field, when present,
+ * must be a finite number too. Extra keys are tolerated: the hydrate reader
+ * ignores anything it does not know, and refusing them would break imports
+ * from a future version.
+ */
+export function isSaneStoredProfile(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const profile = value as Record<string, unknown>;
+  const finiteNumber = (key: string): boolean =>
+    typeof profile[key] === 'number' && Number.isFinite(profile[key] as number);
+  if (!PROFILE_REQUIRED_NUMBER_FIELDS.every(finiteNumber)) {
+    return false;
+  }
+  return PROFILE_OPTIONAL_NUMBER_FIELDS.every(
+    (key) => profile[key] === undefined || finiteNumber(key)
+  );
+}
 
 /** Defensive guard for sw_goals contents read back from storage. */
 export function isTrackedGoal(value: unknown): value is TrackedGoal {
@@ -456,4 +550,390 @@ export function customCardsFromStored(stored: CustomCardStored[]): CardSpec[] {
 /** True when the card id is not one of the built-in deck ids. */
 export function isCustomCard(card: CardSpec): boolean {
   return !CARDS.some((builtIn) => builtIn.id === card.id);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Data protection: export every sw_ key to a spendwise-backup JSON file   */
+/* and import it back, validating each payload with the storage guards.    */
+/* Both helpers are pure: the caller supplies the clock (exportedAtIso)    */
+/* and the raw strings, so tests need no DOM and no network.              */
+/* ---------------------------------------------------------------------- */
+
+/** Backup file format version; import refuses anything else. */
+export const BACKUP_VERSION = 1;
+
+/** The plain header plus raw localStorage payloads of every sw_ key. */
+export interface BackupFile {
+  app: 'spendwise';
+  version: 1;
+  /** ISO timestamp the caller captured at export time. */
+  exportedAtIso: string;
+  /** Raw localStorage values by key; only sw_ prefixed keys are kept. */
+  data: Record<string, string>;
+}
+
+/** One key import validated and is ready to write back to localStorage. */
+export interface BackupEntry {
+  key: string;
+  /** The payload exactly as exported; import writes it back verbatim. */
+  value: string;
+}
+
+/** One key import refused, with a human-readable reason. */
+export interface BackupSkip {
+  key: string;
+  reason: string;
+}
+
+/** Everything the importer needs after a successful parse. */
+export interface BackupImportPlan {
+  exportedAtIso: string;
+  entries: BackupEntry[];
+  skipped: BackupSkip[];
+}
+
+export type BackupParseResult =
+  | { ok: true; plan: BackupImportPlan }
+  | { ok: false; error: string };
+
+/**
+ * Wrap raw localStorage payloads in the spendwise-backup envelope. Only keys
+ * prefixed sw_ are kept, so the file can never smuggle unrelated storage in.
+ * Pure: the caller passes the ISO timestamp so tests stay deterministic.
+ */
+export function buildBackup(data: Record<string, string>, exportedAtIso: string): BackupFile {
+  const filtered: Record<string, string> = {};
+  for (const key of Object.keys(data)) {
+    if (key.startsWith('sw_')) {
+      filtered[key] = data[key];
+    }
+  }
+  return { app: 'spendwise', version: BACKUP_VERSION, exportedAtIso, data: filtered };
+}
+
+/** Parse one JSON value, or null when the string is not valid JSON. */
+function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** Outcome of a per-key payload check: written whole, or skipped with a reason. */
+type KeyOutcome = BackupEntry | BackupSkip;
+
+function isSkip(outcome: KeyOutcome): outcome is BackupSkip {
+  return 'reason' in outcome;
+}
+
+/**
+ * Validate an array payload against a guard, all-or-nothing: the key validates
+ * only when the value parses to a JSON array and every row passes. A single
+ * bad row skips the whole key (reported with the count) rather than importing
+ * a silently filtered subset.
+ */
+function validateArrayKey<T>(
+  key: string,
+  raw: string,
+  guard: (value: unknown) => value is T,
+  noun: string
+): KeyOutcome {
+  const parsed = tryParseJson(raw);
+  if (parsed === null || !Array.isArray(parsed)) {
+    return { key, reason: 'not a JSON array' };
+  }
+  const invalid = parsed.filter((row) => !guard(row)).length;
+  if (invalid > 0) {
+    return { key, reason: `${invalid} of ${parsed.length} ${noun} failed validation` };
+  }
+  return { key, value: raw };
+}
+
+/** Validate one sw_profile_* payload against the sane-profile shape. */
+function validateProfile(key: string, raw: string): KeyOutcome {
+  const parsed = tryParseJson(raw);
+  if (!isSaneStoredProfile(parsed)) {
+    return { key, reason: 'not a sane profile payload' };
+  }
+  return { key, value: raw };
+}
+
+/**
+ * Parse and validate a spendwise-backup file. Structural failures (bad JSON,
+ * wrong header, wrong version) return ok false with an error; payload problems
+ * return ok true with the bad keys listed in skipped, so the importer can
+ * write only the keys that fully validate and report exactly what it refused.
+ * Values are written back verbatim: nothing invalid is ever re-serialised or
+ * partially imported.
+ */
+export function parseBackup(raw: string): BackupParseResult {
+  const parsed = tryParseJson(raw);
+  if (parsed === null) {
+    return { ok: false, error: 'the file is not valid JSON' };
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'the backup must be a JSON object' };
+  }
+  const file = parsed as Record<string, unknown>;
+  if (file.app !== 'spendwise') {
+    return { ok: false, error: 'the file is not a SpendWise backup (app header missing)' };
+  }
+  if (file.version !== BACKUP_VERSION) {
+    return { ok: false, error: `unsupported backup version ${String(file.version)}` };
+  }
+  if (typeof file.exportedAtIso !== 'string' || file.exportedAtIso === '') {
+    return { ok: false, error: 'the backup header has no export timestamp' };
+  }
+  const data = file.data;
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, error: 'the backup has no data object' };
+  }
+
+  const entries: BackupEntry[] = [];
+  const skipped: BackupSkip[] = [];
+  for (const key of Object.keys(data as Record<string, unknown>)) {
+    const value = (data as Record<string, unknown>)[key];
+    if (typeof value !== 'string') {
+      skipped.push({ key, reason: 'value is not a string' });
+      continue;
+    }
+    let outcome: KeyOutcome;
+    if (key === GOALS_KEY) {
+      outcome = validateArrayKey(key, value, isTrackedGoal, 'tracked goal(s)');
+    } else if (key === CUSTOM_CARDS_KEY) {
+      outcome = validateArrayKey(key, value, isCustomCardStored, 'custom card(s)');
+    } else if (key === LEDGER_YOU_KEY || key === LEDGER_PARTNER_KEY || key === LEDGER_US_KEY) {
+      outcome = validateArrayKey(key, value, isLedgerRow, 'ledger row(s)');
+    } else if (key === WALLET_YOU_KEY || key === WALLET_PARTNER_KEY || key === WALLET_US_KEY) {
+      outcome = validateArrayKey(
+        key,
+        value,
+        (entry): entry is string => typeof entry === 'string',
+        'wallet id(s)'
+      );
+    } else if (key === PROFILE_YOU_KEY || key === PROFILE_PARTNER_KEY) {
+      outcome = validateProfile(key, value);
+    } else if (key === SPACE_ACTIVE_KEY) {
+      outcome =
+        value === 'you' || value === 'partner' || value === 'us'
+          ? { key, value }
+          : { key, reason: 'not a space name' };
+    } else {
+      outcome = { key, reason: 'unrecognised key' };
+    }
+    if (isSkip(outcome)) {
+      skipped.push(outcome);
+    } else {
+      entries.push(outcome);
+    }
+  }
+  return { ok: true, plan: { exportedAtIso: file.exportedAtIso, entries, skipped } };
+}
+
+/* ---------------------------------------------------------------------- */
+/* What-if advisor: prompt rebuilding, revision application and the wire   */
+/* guard for POST /api/advisor replies.                                    */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Prompt text rebuilt from a goal spec's summary fields, so applying an
+ * advisor revision leaves the prompt consistent with the goal it produced.
+ * Wording chosen so the offline regex parser reproduces the spec exactly:
+ * money with a k suffix or an S$ prefix, deadline always "by age N".
+ */
+export function promptFromGoalSpec(goal: GoalSpec): string {
+  const money = (amount: number): string =>
+    amount >= 1000 && amount % 1000 === 0 ? `${amount / 1000}k` : `S$${Math.round(amount)}`;
+  if (goal.kind === 'property_purchase') {
+    const what = goal.propertyType === 'bto' ? 'BTO flat' : goal.propertyType === 'condo' ? 'condo' : 'HDB';
+    return `I want to buy a ${what} worth about ${money(goal.targetPriceSgd)} by age ${goal.deadlineAge}`;
+  }
+  if (goal.kind === 'car_purchase') {
+    return `I want to buy a car worth about ${money(goal.priceSgd)} by age ${goal.deadlineAge}`;
+  }
+  const rate =
+    goal.instrumentRatePa !== undefined
+      ? ` at ${Math.round(goal.instrumentRatePa * 1000) / 10} percent pa`
+      : '';
+  return `I want to save ${money(goal.targetAmountSgd)} by age ${goal.deadlineAge}${rate}`;
+}
+
+/**
+ * Map a revised profile (from the advisor wire) onto the profile form of a
+ * personal space. takeHomeMonthlyIncome and emergencyReserveMonths are kept
+ * from the current form on purpose: the advisor request schema cannot carry
+ * them, so a revision reply never states them and clearing them would
+ * silently discard what the user typed. Fields the wire does carry round trip
+ * verbatim; absent optional ones keep their current value.
+ */
+export function profileFormFromRevised(
+  revised: UserProfile,
+  current: ProfileFormState
+): ProfileFormState {
+  const optional = (value: number | undefined, fallback: string): string =>
+    value !== undefined && Number.isFinite(value) ? String(value) : fallback;
+  return {
+    age: String(revised.age),
+    grossMonthlyIncome: String(revised.grossMonthlyIncome),
+    monthlyExpenses: String(revised.monthlyExpenses),
+    liquidSavings: String(revised.liquidSavings),
+    cpfOaBalance: String(revised.cpfOaBalance),
+    investmentsSgd: optional(revised.investmentsSgd, current.investmentsSgd),
+    investmentRatePct:
+      revised.investmentRatePa !== undefined
+        ? String(revised.investmentRatePa * 100)
+        : current.investmentRatePct,
+    takeHomeMonthlyIncome: current.takeHomeMonthlyIncome,
+    monthlyDebtCommitments: optional(revised.monthlyDebtCommitments, current.monthlyDebtCommitments),
+    emergencyReserveMonths: current.emergencyReserveMonths,
+  };
+}
+
+/** Before and after figures of a revise turn, every number from buildPlan. */
+export interface AdvisorDeltaWire {
+  requiredMonthlySavingsBefore: number;
+  requiredMonthlySavingsAfter: number;
+  verdictBefore: VerdictStatus;
+  verdictAfter: VerdictStatus;
+  targetBefore: number;
+  targetAfter: number;
+}
+
+/** One reply from POST /api/advisor, mirroring the route's three shapes. */
+export type AdvisorReply =
+  | { kind: 'clarify'; questions: string[] }
+  | { kind: 'answer'; summary: string }
+  | {
+      kind: 'revise';
+      summary: string;
+      note: string;
+      delta: AdvisorDeltaWire;
+      comparison: string;
+      revisedGoalSpec: GoalSpec;
+      revisedProfile: UserProfile;
+    };
+
+/** Guard for /api/advisor payloads read back from fetch. */
+export function isAdvisorReply(value: unknown): value is AdvisorReply {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const reply = value as Record<string, unknown>;
+  if (reply.kind === 'clarify') {
+    return (
+      Array.isArray(reply.questions) &&
+      reply.questions.length > 0 &&
+      reply.questions.every((question) => typeof question === 'string' && question.length > 0)
+    );
+  }
+  if (reply.kind === 'answer') {
+    return typeof reply.summary === 'string' && reply.summary.length > 0;
+  }
+  if (reply.kind === 'revise') {
+    const delta = reply.delta;
+    const finite = (entry: unknown): boolean =>
+      typeof entry === 'number' && Number.isFinite(entry);
+    const verdict = (entry: unknown): boolean =>
+      entry === 'achievable' || entry === 'stretch' || entry === 'not_achievable';
+    const deltaRecord = delta === null || typeof delta !== 'object' ? null : (delta as Record<string, unknown>);
+    return (
+      typeof reply.summary === 'string' &&
+      reply.summary.length > 0 &&
+      typeof reply.note === 'string' &&
+      typeof reply.comparison === 'string' &&
+      deltaRecord !== null &&
+      finite(deltaRecord.requiredMonthlySavingsBefore) &&
+      finite(deltaRecord.requiredMonthlySavingsAfter) &&
+      verdict(deltaRecord.verdictBefore) &&
+      verdict(deltaRecord.verdictAfter) &&
+      finite(deltaRecord.targetBefore) &&
+      finite(deltaRecord.targetAfter) &&
+      isGoalSpec(reply.revisedGoalSpec) &&
+      isSaneStoredProfile(reply.revisedProfile)
+    );
+  }
+  return false;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Guided sample journey: pure storage-key builders for the demo state.    */
+/* ---------------------------------------------------------------------- */
+
+/** The primary profile of the sample journey, 26 with a growing portfolio. */
+const JOURNEY_YOU_PROFILE: UserProfile = {
+  age: 26,
+  grossMonthlyIncome: 5200,
+  monthlyExpenses: 2800,
+  liquidSavings: 48000,
+  cpfOaBalance: 42000,
+  milesValuationCents: 1.8,
+  investmentsSgd: 12000,
+  investmentRatePa: 0.045,
+};
+
+/** The partner profile of the sample journey, 27 and saving steadily. */
+const JOURNEY_PARTNER_PROFILE: UserProfile = {
+  age: 27,
+  grossMonthlyIncome: 4600,
+  monthlyExpenses: 2400,
+  liquidSavings: 36000,
+  cpfOaBalance: 30000,
+  milesValuationCents: 1.8,
+};
+
+/**
+ * Build the sample journey as raw localStorage payloads keyed by their sw_
+ * names: two personal profiles, two wallets of built-in cards, one tracked Us
+ * goal whose figures are frozen exactly the way Track this goal freezes them
+ * (buildPlan over the combined household profile), with three months of logs
+ * across both contributors, and the Us space selected. Pure: the caller
+ * supplies the current "YYYY-MM" so the same key always builds the identical
+ * payload. Nothing here touches window; the caller writes the keys.
+ */
+export function buildSampleJourney(nowMonthKey: string): Record<string, string> {
+  const household = combineProfiles(JOURNEY_YOU_PROFILE, JOURNEY_PARTNER_PROFILE);
+  const goalSpec: GoalSpec = {
+    kind: 'property_purchase',
+    propertyType: 'hdb_resale',
+    targetPriceSgd: 600_000,
+    deadlineAge: 30,
+    firstProperty: true,
+  };
+  const plan = buildPlan(goalSpec, household, fillAssumptions(goalSpec, household));
+  const lastBalance = plan.savingsSchedule[plan.savingsSchedule.length - 1]?.balance ?? 0;
+  const name = goalNameFromSpec(goalSpec);
+  const startMonthKey = monthKeyOffset(nowMonthKey, -3);
+  const requiredMonthly = Math.max(0, plan.requiredMonthlySavings);
+  // Sample contributions derive from the plan's own pace so the demo month
+  // amounts can never drift from the required monthly saving.
+  const youMonth = Math.round(requiredMonthly / 50) * 50;
+  const partnerMonth = Math.round((requiredMonthly * 0.6) / 10) * 10;
+  const goal: TrackedGoal = {
+    id: goalSlug(name),
+    name,
+    goalSpec,
+    targetSgd: lastBalance > 0 ? lastBalance : Math.max(0, requiredMonthly * 48),
+    requiredMonthlySgd: requiredMonthly,
+    ratePa: rateFromAssumptions(plan.assumptions),
+    startAge: household.age,
+    startSavingsSgd: Math.max(0, household.liquidSavings),
+    deadlineAge: goalSpec.deadlineAge,
+    startMonthKey,
+    space: 'us',
+    logs: [
+      { monthKey: startMonthKey, contributedSgd: youMonth, contributor: 'you', note: 'salary transfer' },
+      { monthKey: monthKeyOffset(startMonthKey, 1), contributedSgd: youMonth, contributor: 'you' },
+      { monthKey: monthKeyOffset(startMonthKey, 1), contributedSgd: partnerMonth, contributor: 'partner', note: 'year-end bonus' },
+      { monthKey: monthKeyOffset(startMonthKey, 2), contributedSgd: partnerMonth, contributor: 'partner' },
+    ],
+  };
+  return {
+    [PROFILE_YOU_KEY]: JSON.stringify(JOURNEY_YOU_PROFILE),
+    [PROFILE_PARTNER_KEY]: JSON.stringify(JOURNEY_PARTNER_PROFILE),
+    [WALLET_YOU_KEY]: JSON.stringify(['uob-one', 'dbs-live-fresh', 'citi-cash-back-plus']),
+    [WALLET_PARTNER_KEY]: JSON.stringify(['hsbc-live-plus', 'sc-simply-cash']),
+    [GOALS_KEY]: JSON.stringify([goal]),
+    [SPACE_ACTIVE_KEY]: 'us',
+  };
 }

@@ -4,8 +4,9 @@
  * SpendWise client shell: sticky header with a segmented switcher over three
  * tabs of client-side state, and three spaces underneath: You, Partner and Us.
  *
- * Tab one (Goal Planner) posts the prompt and profile to /api/plan and renders
- * the returned PlanJSON. Tab two (Progress) tracks logged savings against the
+ * Tab one (Goal Planner) posts the prompt and profile to /api/plan, renders
+ * the returned PlanJSON and, under the plan, the what-if advisor that talks to
+ * POST /api/advisor. Tab two (Progress) tracks logged savings against the
  * plan. Tab three (Card Maximizer) runs the deterministic routing engine
  * entirely in the browser with zero model calls, over the merged deck of
  * built-in cards plus the user's own saved cards.
@@ -23,15 +24,27 @@
  * sw_ledger_partner, sw_ledger_us, plus the shared sw_custom_cards and
  * sw_goals. Storage reads happen inside effects so server prerender and
  * client hydration always agree, and every key stays backward compatible.
+ * The footer exports every sw_ key to a backup file, imports validated
+ * backups back, and can seed the guided sample journey through the same keys.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { mergeCards } from '../lib/cards/custom';
 import type { CardSpec } from '../lib/cards/types';
 import { CARDS } from '../lib/data/cards';
-import type { PlanJSON } from '../lib/planner/build';
-import { combineProfiles, type UserProfile } from '../lib/planner/goalspec';
-import { goalNameFromSpec, goalSlug, rateFromAssumptions, type TrackedGoal } from '../lib/planner/progress';
+import { buildPlan, type PlanJSON } from '../lib/planner/build';
+import { combineProfiles, type GoalSpec, type UserProfile } from '../lib/planner/goalspec';
+import { fillAssumptions } from '../lib/planner/parse';
+import {
+  goalNameFromSpec,
+  goalSlug,
+  rateFromAssumptions,
+  removeGoal,
+  removeSavingsLog,
+  sameGoal,
+  upsertSavingsLog,
+  type TrackedGoal,
+} from '../lib/planner/progress';
 
 import { Header } from './components/header';
 import { PlannerTab } from './components/planner-tab';
@@ -48,6 +61,8 @@ import {
   PERSON_SPACE_IDS,
   SPACE_ACTIVE_KEY,
   SPACE_IDS,
+  buildBackup,
+  buildSampleJourney,
   clamp,
   currentMonthKey,
   customCardsFromStored,
@@ -55,11 +70,15 @@ import {
   isCustomCardStored,
   isGoalSpec,
   isLedgerRow,
+  isStatusJson,
   isTrackedGoal,
   ledgerKeyFor,
   migrateLegacyStorage,
-  profileKeyFor,
+  parseBackup,
+  profileFormFromRevised,
   profileFromForm,
+  profileKeyFor,
+  promptFromGoalSpec,
   walletKeyFor,
   type CustomCardStored,
   type LedgerRow,
@@ -67,6 +86,7 @@ import {
   type PlanResult,
   type ProfileFormState,
   type SpaceId,
+  type StatusJson,
   type TabId,
 } from './components/shared';
 
@@ -79,6 +99,8 @@ function readStoredProfile(
   }
   const stored = JSON.parse(raw) as Partial<UserProfile>;
   const base = defaultProfileForm();
+  const optionalField = (value: number | undefined): string =>
+    typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
   return {
     form: {
       age: String(stored.age ?? base.age),
@@ -86,14 +108,14 @@ function readStoredProfile(
       monthlyExpenses: String(stored.monthlyExpenses ?? base.monthlyExpenses),
       liquidSavings: String(stored.liquidSavings ?? base.liquidSavings),
       cpfOaBalance: String(stored.cpfOaBalance ?? base.cpfOaBalance),
-      investmentsSgd:
-        typeof stored.investmentsSgd === 'number' && Number.isFinite(stored.investmentsSgd)
-          ? String(stored.investmentsSgd)
-          : '',
+      investmentsSgd: optionalField(stored.investmentsSgd),
       investmentRatePct:
         typeof stored.investmentRatePa === 'number' && Number.isFinite(stored.investmentRatePa)
           ? String(stored.investmentRatePa * 100)
           : '',
+      takeHomeMonthlyIncome: optionalField(stored.takeHomeMonthlyIncome),
+      monthlyDebtCommitments: optionalField(stored.monthlyDebtCommitments),
+      emergencyReserveMonths: optionalField(stored.emergencyReserveMonths),
     },
     milesValuationCents:
       typeof stored.milesValuationCents === 'number' && Number.isFinite(stored.milesValuationCents)
@@ -127,6 +149,10 @@ export default function Home() {
   const [activeSpace, setActiveSpace] = useState<SpaceId>('you');
   const [hydrated, setHydrated] = useState(false);
   const [monthKey, setMonthKey] = useState('');
+  const [importReport, setImportReport] = useState<string | null>(null);
+  const [sampleIntroVisible, setSampleIntroVisible] = useState(false);
+  const [status, setStatus] = useState<StatusJson | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Planner tab state. The prompt and the latest plan are shared across
   // spaces; the profile forms are per person.
@@ -159,61 +185,85 @@ export default function Home() {
   // Progress tab state. Goals carry their own space field.
   const [goals, setGoals] = useState<TrackedGoal[]>([]);
 
+  // Connection truth: one fetch, shared by the header pill and the advisor's
+  // engine badge. A failure keeps null, which both render as the local floor.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/status')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: unknown) => {
+        if (!cancelled && isStatusJson(data)) {
+          setStatus(data);
+        }
+      })
+      .catch(() => {
+        // Network failure keeps the Local mode pill.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Hydrate from localStorage after mount so SSR and first render agree.
+  // The reads live in loadStateFromStorage so the import and sample-journey
+  // handlers can replay them after writing keys back into localStorage.
+  function loadStateFromStorage(): void {
+    // Custom cards first: whether a stored wallet id is still valid depends
+    // on the merged deck they produce.
+    const rawCustom = window.localStorage.getItem(CUSTOM_CARDS_KEY);
+    if (rawCustom !== null) {
+      const stored: unknown = JSON.parse(rawCustom);
+      if (Array.isArray(stored)) {
+        setCustomStored(stored.filter(isCustomCardStored));
+      }
+    }
+
+    for (const person of PERSON_SPACE_IDS) {
+      const stored = readStoredProfile(window.localStorage.getItem(profileKeyFor(person)));
+      if (stored !== null) {
+        setProfileForms((previous) => ({ ...previous, [person]: stored.form }));
+        setMilesValuations((previous) => ({ ...previous, [person]: stored.milesValuationCents }));
+      }
+    }
+
+    const walletState: Partial<Record<SpaceId, string[]>> = {};
+    for (const space of SPACE_IDS) {
+      const stored = readStringArray(window.localStorage.getItem(walletKeyFor(space)));
+      if (stored !== null) {
+        walletState[space] = stored;
+      }
+    }
+    setWallets((previous) => ({ ...previous, ...walletState }));
+
+    const ledgerState: Partial<Record<SpaceId, LedgerRow[]>> = {};
+    for (const space of SPACE_IDS) {
+      const stored = readLedger(window.localStorage.getItem(ledgerKeyFor(space)));
+      if (stored !== null) {
+        ledgerState[space] = stored;
+      }
+    }
+    setLedgers((previous) => ({ ...previous, ...ledgerState }));
+
+    const rawGoals = window.localStorage.getItem(GOALS_KEY);
+    if (rawGoals !== null) {
+      const stored: unknown = JSON.parse(rawGoals);
+      if (Array.isArray(stored)) {
+        setGoals(stored.filter(isTrackedGoal));
+      }
+    }
+
+    const storedSpace = readSpace(window.localStorage.getItem(SPACE_ACTIVE_KEY));
+    if (storedSpace !== null) {
+      setActiveSpace(storedSpace);
+    }
+  }
+
   useEffect(() => {
     try {
       // Legacy first: the per-space reads below must see pre-couples data
       // already copied into the you space. Idempotent, deletes nothing.
       migrateLegacyStorage();
-
-      // Custom cards next: whether a stored wallet id is still valid depends
-      // on the merged deck they produce.
-      const rawCustom = window.localStorage.getItem(CUSTOM_CARDS_KEY);
-      if (rawCustom !== null) {
-        const stored: unknown = JSON.parse(rawCustom);
-        if (Array.isArray(stored)) {
-          setCustomStored(stored.filter(isCustomCardStored));
-        }
-      }
-
-      for (const person of PERSON_SPACE_IDS) {
-        const stored = readStoredProfile(window.localStorage.getItem(profileKeyFor(person)));
-        if (stored !== null) {
-          setProfileForms((previous) => ({ ...previous, [person]: stored.form }));
-          setMilesValuations((previous) => ({ ...previous, [person]: stored.milesValuationCents }));
-        }
-      }
-
-      const walletState: Partial<Record<SpaceId, string[]>> = {};
-      for (const space of SPACE_IDS) {
-        const stored = readStringArray(window.localStorage.getItem(walletKeyFor(space)));
-        if (stored !== null) {
-          walletState[space] = stored;
-        }
-      }
-      setWallets((previous) => ({ ...previous, ...walletState }));
-
-      const ledgerState: Partial<Record<SpaceId, LedgerRow[]>> = {};
-      for (const space of SPACE_IDS) {
-        const stored = readLedger(window.localStorage.getItem(ledgerKeyFor(space)));
-        if (stored !== null) {
-          ledgerState[space] = stored;
-        }
-      }
-      setLedgers((previous) => ({ ...previous, ...ledgerState }));
-
-      const rawGoals = window.localStorage.getItem(GOALS_KEY);
-      if (rawGoals !== null) {
-        const stored: unknown = JSON.parse(rawGoals);
-        if (Array.isArray(stored)) {
-          setGoals(stored.filter(isTrackedGoal));
-        }
-      }
-
-      const storedSpace = readSpace(window.localStorage.getItem(SPACE_ACTIVE_KEY));
-      if (storedSpace !== null) {
-        setActiveSpace(storedSpace);
-      }
+      loadStateFromStorage();
     } catch {
       // Corrupt storage falls back to defaults; nothing to recover here.
     }
@@ -457,12 +507,10 @@ export default function Home() {
       logs: [],
     };
     // Re-tracking the same goal re-baselines it: the old logs belong to the
-    // old starting point. Goal ids only collide within a space, so the same
-    // goal name tracked in You and in Us keeps two separate histories.
+    // old starting point. Goal identity is id plus space (sameGoal), so the
+    // same goal name tracked in You and in Us keeps two separate histories.
     setGoals((previous) => {
-      const existing = previous.findIndex(
-        (goal) => goal.id === tracked.id && (goal.space ?? 'you') === activeSpace
-      );
+      const existing = previous.findIndex((goal) => sameGoal(goal, tracked));
       if (existing === -1) {
         return [...previous, tracked];
       }
@@ -473,12 +521,18 @@ export default function Home() {
     setActiveTab('progress');
   }
 
-  function deleteGoal(goalId: string): void {
-    setGoals((previous) => previous.filter((goal) => goal.id !== goalId));
+  /** Delete by id plus space: a same-named goal in another space survives. */
+  function deleteGoal(target: TrackedGoal): void {
+    setGoals((previous) => removeGoal(previous, target.id, target.space));
   }
 
+  /**
+   * Insert-or-replace one savings log. Storage identity is monthKey AND
+   * contributor, enforced by upsertSavingsLog: logging the partner's saving
+   * for a month never overwrites the you entry of that month.
+   */
   function logSavings(
-    goalId: string,
+    target: TrackedGoal,
     logMonthKey: string,
     contributedSgd: number,
     note: string,
@@ -486,23 +540,27 @@ export default function Home() {
   ): void {
     setGoals((previous) =>
       previous.map((goal) =>
-        goal.id === goalId
-          ? {
-              ...goal,
-              logs: [
-                ...goal.logs.filter((log) => log.monthKey !== logMonthKey),
-                { monthKey: logMonthKey, contributedSgd, contributor, ...(note !== '' ? { note } : {}) },
-              ],
-            }
+        sameGoal(goal, target)
+          ? upsertSavingsLog(goal, {
+              monthKey: logMonthKey,
+              contributedSgd,
+              contributor,
+              ...(note !== '' ? { note } : {}),
+            })
           : goal
       )
     );
   }
 
-  function deleteLog(goalId: string, logMonthKey: string): void {
+  /** Remove one month's entry for one contributor; the other's survives. */
+  function deleteLog(
+    target: TrackedGoal,
+    logMonthKey: string,
+    contributor: 'you' | 'partner'
+  ): void {
     setGoals((previous) =>
       previous.map((goal) =>
-        goal.id === goalId ? { ...goal, logs: goal.logs.filter((log) => log.monthKey !== logMonthKey) } : goal
+        sameGoal(goal, target) ? removeSavingsLog(goal, logMonthKey, contributor) : goal
       )
     );
   }
@@ -546,12 +604,139 @@ export default function Home() {
     }
   }
 
+  /**
+   * Apply an advisor revision. The prompt is rebuilt from the revised goal
+   * spec's summary fields and the rendered plan is rebuilt right here with
+   * the same deterministic buildPlan and fillAssumptions the /api/plan route
+   * uses, so Apply needs no second network call and every number still comes
+   * from the kernels. In a personal space the revised profile also lands in
+   * that person's form (fields the advisor wire cannot carry keep their
+   * current value); in the Us space the profile cannot be split back into
+   * per-person forms, which the advisor card itself notes.
+   */
+  function applyAdvisorRevision(revisedGoalSpec: GoalSpec, revisedProfile: UserProfile): void {
+    setPrompt(promptFromGoalSpec(revisedGoalSpec));
+    if (planResult !== null) {
+      setPlanResult({
+        plan: buildPlan(revisedGoalSpec, revisedProfile, fillAssumptions(revisedGoalSpec, revisedProfile)),
+        parser: planResult.parser,
+        goalSpec: revisedGoalSpec,
+      });
+    }
+    if (activeSpace !== 'us') {
+      const person: PersonSpace = activeSpace === 'partner' ? 'partner' : 'you';
+      setProfileForms((previous) => ({
+        ...previous,
+        [person]: profileFormFromRevised(revisedProfile, previous[person]),
+      }));
+    }
+  }
+
   function selectSpace(space: SpaceId): void {
     setActiveSpace(space);
     // A plan computed against another space's profile must not linger on
     // screen after the switch; the Plan button is the only replan trigger.
     setPlanResult(null);
     setPlanError(null);
+  }
+
+  // Data protection: every sw_ key, serialised into one downloadable file.
+
+  /** Export every sw_ prefixed localStorage key as a spendwise-backup JSON. */
+  function exportData(): void {
+    const data: Record<string, string> = {};
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key !== null && key.startsWith('sw_')) {
+        const value = window.localStorage.getItem(key);
+        if (value !== null) {
+          data[key] = value;
+        }
+      }
+    }
+    const backup = buildBackup(data, new Date().toISOString());
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'spendwise-backup.json';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Import a backup file: write only the keys that pass parseBackup's guards,
+   * reload all state from storage, and report what was skipped. The Date use
+   * is allowed in src/app client handlers.
+   */
+  async function importData(file: File): Promise<void> {
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setImportReport('Import failed: the file could not be read.');
+      return;
+    }
+    const result = parseBackup(text);
+    if (!result.ok) {
+      setImportReport(`Import failed: ${result.error}.`);
+      return;
+    }
+    const { entries, skipped, exportedAtIso } = result.plan;
+    for (const entry of entries) {
+      window.localStorage.setItem(entry.key, entry.value);
+    }
+    try {
+      loadStateFromStorage();
+    } catch {
+      // A validated backup should always load; if it somehow does not, the
+      // defaults apply exactly as on a corrupt first hydrate.
+    }
+    const parts = [
+      `Imported ${entries.length} key${entries.length === 1 ? '' : 's'} from the backup of ${exportedAtIso}.`,
+      ...(skipped.length > 0
+        ? [`Skipped: ${skipped.map((entry) => `${entry.key} (${entry.reason})`).join(', ')}.`]
+        : []),
+    ];
+    setImportReport(parts.join(' '));
+  }
+
+  function onImportFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0];
+    if (file !== undefined) {
+      void importData(file);
+    }
+    // Reset so picking the same file twice re-fires the change event.
+    event.target.value = '';
+  }
+
+  /**
+   * Seed the guided sample journey through the existing storage keys, then
+   * land on the Us Progress tab with the four-step intro card showing. The
+   * button confirms first: seeding overwrites the profiles, personal wallets,
+   * tracked goals and active space it touches.
+   */
+  function trySampleJourney(): void {
+    const confirmed = window.confirm(
+      'The sample journey replaces your saved profiles, personal wallets, tracked goals and active space with demo data. Continue?'
+    );
+    if (!confirmed) {
+      return;
+    }
+    const seed = buildSampleJourney(monthKey === '' ? currentMonthKey(new Date()) : monthKey);
+    for (const key of Object.keys(seed)) {
+      window.localStorage.setItem(key, seed[key]);
+    }
+    try {
+      loadStateFromStorage();
+    } catch {
+      // The seed is validated data; on a freak failure the defaults apply.
+    }
+    // A stale plan from the pre-seed profile must not linger.
+    setPlanResult(null);
+    setPlanError(null);
+    setActiveTab('progress');
+    setSampleIntroVisible(true);
   }
 
   return (
@@ -561,6 +746,7 @@ export default function Home() {
         onSelectTab={setActiveTab}
         activeSpace={activeSpace}
         onSelectSpace={selectSpace}
+        status={status}
       />
       <main className="page">
         <p className="page-intro">
@@ -582,10 +768,47 @@ export default function Home() {
               planResult={planResult}
               onPlan={handlePlan}
               onTrackGoal={trackCurrentGoal}
+              connection={status === null ? null : status.connection}
+              onApplyRevision={applyAdvisorRevision}
             />
           </div>
         ) : activeTab === 'progress' ? (
           <div role="tabpanel" id="panel-progress" aria-labelledby="tab-progress" className="stack">
+            {sampleIntroVisible ? (
+              <section className="card journey-intro" aria-label="Sample journey guide">
+                <div className="card-title-row">
+                  <h2 className="card-title">Sample journey, in four steps</h2>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-small"
+                    onClick={() => setSampleIntroVisible(false)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                <ol className="action-list">
+                  <li>
+                    <span className="strong">Set your numbers.</span> The journey seeded both
+                    personal profiles, their wallets and this tracked Us goal. Open You and Partner
+                    to adjust income, savings and CPF.
+                  </li>
+                  <li>
+                    <span className="strong">Ask the advisor.</span> Back on the Goal Planner, ask a
+                    what-if such as &ldquo;what if my partner stops working for 6 months?&rdquo; and
+                    apply or keep each revision.
+                  </li>
+                  <li>
+                    <span className="strong">Log a month each.</span> The seeded goal already carries
+                    three months of savings from both contributors. Log this month in the Us space
+                    to keep the trajectory honest.
+                  </li>
+                  <li>
+                    <span className="strong">Export your data.</span> The footer button writes every
+                    SpendWise key to a backup JSON you can import in any browser.
+                  </li>
+                </ol>
+              </section>
+            ) : null}
             <DashboardTab
               space={activeSpace}
               goals={goals.filter((goal) => (goal.space ?? 'you') === activeSpace)}
@@ -624,6 +847,36 @@ export default function Home() {
             Educational hackathon demo, not financial advice. Duty tables, loan caps and card
             terms are illustrative snapshots that must be verified against IRAS, MAS, CPF and
             the issuers.
+          </p>
+          <div className="footer-actions">
+            <button type="button" className="btn btn-secondary btn-small" onClick={exportData}>
+              Export data
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-small"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Import data
+            </button>
+            <button type="button" className="btn btn-secondary btn-small" onClick={trySampleJourney}>
+              Try the sample journey
+            </button>
+            <input
+              ref={fileInputRef}
+              className="footer-file"
+              type="file"
+              accept="application/json,.json"
+              aria-label="Import a SpendWise backup file"
+              onChange={onImportFileChange}
+            />
+            {importReport !== null ? <span className="muted footer-report">{importReport}</span> : null}
+          </div>
+          <p className="source-note">
+            Export writes every SpendWise key in this browser to a spendwise-backup.json file.
+            Import validates the file first and only restores keys that pass the app&rsquo;s own
+            shape checks, so a tampered or partial backup never corrupts your data. The sample
+            journey asks before it overwrites anything.
           </p>
         </footer>
       </main>

@@ -25,6 +25,8 @@ export const PLANNER_DEFAULTS = {
   instrumentRatePa: 0.018,
   /** Investment portfolio growth when the profile states none: 4.5 percent a year. */
   investmentRatePa: 0.045,
+  /** Months of expenses held back as an emergency reserve cushion. */
+  emergencyReserveMonths: 3,
 } as const;
 
 /**
@@ -86,6 +88,20 @@ export const userProfileSchema = z.object({
   investmentsSgd: z.number().optional(),
   /** Portfolio growth rate; when unstated the planner assumes the default and shows a chip. */
   investmentRatePa: z.number().optional(),
+  /**
+   * Take-home (post-deduction) monthly income. Absent means the planner
+   * derives it as gross minus the employee CPF contribution; stated values
+   * turn the CPF deduction off because the figure already accounts for it.
+   */
+  takeHomeMonthlyIncome: z.number().optional(),
+  /** Monthly debt commitments outside monthlyExpenses; absent means 0. */
+  monthlyDebtCommitments: z.number().optional(),
+  /**
+   * Months of expenses to hold as an emergency reserve cushion before locking
+   * money into a goal. Absent means the PLANNER_DEFAULTS value (3); advisory
+   * text only, it never changes the savings math.
+   */
+  emergencyReserveMonths: z.number().optional(),
 });
 export type UserProfile = z.infer<typeof userProfileSchema>;
 
@@ -107,6 +123,17 @@ export type UserProfile = z.infer<typeof userProfileSchema>;
  * - investmentRatePa takes you's when set, else partner's, else is omitted so
  *   downstream code falls back to PLANNER_DEFAULTS.investmentRatePa and shows
  *   the unstated-rate chip.
+ * - monthlyDebtCommitments add treating undefined as 0, with the same
+ *   zero-sum collapse rule as investmentsSgd: an exact 0 sum is omitted so the
+ *   household reads "no stated debts" rather than a misleading explicit 0.
+ * - emergencyReserveMonths takes the max of the two effective values (a
+ *   stated value, else PLANNER_DEFAULTS.emergencyReserveMonths), so the
+ *   household keeps the more conservative cushion. It is only written when at
+ *   least one partner stated a value; unstated-on-both stays omitted so the
+ *   default keeps applying downstream.
+ * - takeHomeMonthlyIncome sums only when BOTH partners stated one; anything
+ *   else is omitted so the planner derives household take-home from the summed
+ *   gross instead of mixing a stated figure with a derived one.
  * - age comes from you: the combined profile stays anchored on the primary
  *   timeline so deadline ages keep meaning "your age" in every plan built from
  *   it. (The only field the couples feature deliberately does not sum.)
@@ -127,6 +154,19 @@ export function combineProfiles(you: UserProfile, partner: UserProfile): UserPro
   const rate = you.investmentRatePa ?? partner.investmentRatePa;
   if (rate !== undefined) {
     combined.investmentRatePa = rate;
+  }
+  const debts = (you.monthlyDebtCommitments ?? 0) + (partner.monthlyDebtCommitments ?? 0);
+  if (debts !== 0) {
+    combined.monthlyDebtCommitments = debts;
+  }
+  if (you.emergencyReserveMonths !== undefined || partner.emergencyReserveMonths !== undefined) {
+    combined.emergencyReserveMonths = Math.max(
+      you.emergencyReserveMonths ?? PLANNER_DEFAULTS.emergencyReserveMonths,
+      partner.emergencyReserveMonths ?? PLANNER_DEFAULTS.emergencyReserveMonths
+    );
+  }
+  if (you.takeHomeMonthlyIncome !== undefined && partner.takeHomeMonthlyIncome !== undefined) {
+    combined.takeHomeMonthlyIncome = you.takeHomeMonthlyIncome + partner.takeHomeMonthlyIncome;
   }
   return combined;
 }

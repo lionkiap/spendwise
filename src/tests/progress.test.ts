@@ -13,6 +13,10 @@ import {
   progressRatio,
   projectedBalanceAtDeadline,
   rateFromAssumptions,
+  removeGoal,
+  removeSavingsLog,
+  sameGoal,
+  upsertSavingsLog,
   type TrackedGoal,
 } from '../lib/planner/progress';
 import { PLANNER_DEFAULTS, type GoalSpec } from '../lib/planner/goalspec';
@@ -205,5 +209,92 @@ describe('chart series and naming', () => {
     expect(
       rateFromAssumptions([{ field: 'instrumentRatePa', value: 0.03, reason: 'stated' }])
     ).toBe(0.03);
+  });
+});
+
+describe('log and goal storage semantics', () => {
+  it('keeps logging you then partner in the same month as two entries', () => {
+    let goal = makeGoal({ ratePa: 0 });
+    goal = upsertSavingsLog(goal, { monthKey: '2026-03', contributedSgd: 1_000 });
+    goal = upsertSavingsLog(goal, { monthKey: '2026-03', contributedSgd: 400, contributor: 'partner' });
+    expect(goal.logs).toHaveLength(2);
+    expect(goal.logs.map((log) => log.contributedSgd)).toEqual([1_000, 400]);
+    // Both entries count toward the balance: 5,000 pot + 1,000 + 400 at a zero
+    // rate = 6,400.
+    expect(actualBalance(goal, 2)).toBeCloseTo(6_400, 6);
+  });
+
+  it('replaces the entry with the same monthKey and contributor, absent meaning you', () => {
+    let goal = makeGoal({ logs: [{ monthKey: '2026-03', contributedSgd: 1_000 }] });
+    goal = upsertSavingsLog(goal, { monthKey: '2026-03', contributedSgd: 1_500, contributor: 'you' });
+    expect(goal.logs).toHaveLength(1);
+    expect(goal.logs[0]?.contributedSgd).toBe(1_500);
+    // An entry stored without a contributor is the you entry.
+    goal = upsertSavingsLog(goal, { monthKey: '2026-03', contributedSgd: 2_000 });
+    expect(goal.logs).toHaveLength(1);
+    expect(goal.logs[0]?.contributedSgd).toBe(2_000);
+    expect(goal.logs[0]?.contributor).toBeUndefined();
+    // The partner entry for the same month is a different entry.
+    goal = upsertSavingsLog(goal, { monthKey: '2026-03', contributedSgd: 300, contributor: 'partner' });
+    expect(goal.logs).toHaveLength(2);
+  });
+
+  it('removes only the named contributor entry for the month', () => {
+    const goal = makeGoal({
+      logs: [
+        { monthKey: '2026-03', contributedSgd: 1_000 },
+        { monthKey: '2026-03', contributedSgd: 400, contributor: 'partner' },
+      ],
+    });
+    // Absent contributor means you: the partner entry survives.
+    expect(removeSavingsLog(goal, '2026-03').logs).toEqual([
+      { monthKey: '2026-03', contributedSgd: 400, contributor: 'partner' },
+    ]);
+    expect(removeSavingsLog(goal, '2026-03', 'partner').logs).toEqual([
+      { monthKey: '2026-03', contributedSgd: 1_000 },
+    ]);
+    // A month with no entry is a no-op.
+    expect(removeSavingsLog(goal, '2026-04').logs).toHaveLength(2);
+  });
+
+  it('never mutates the goal it copies from', () => {
+    const original = makeGoal({ logs: [{ monthKey: '2026-03', contributedSgd: 1_000 }] });
+    const snapshot = JSON.stringify(original.logs);
+    upsertSavingsLog(original, { monthKey: '2026-03', contributedSgd: 9_000 });
+    removeSavingsLog(original, '2026-03');
+    removeGoal([original], original.id);
+    expect(JSON.stringify(original.logs)).toBe(snapshot);
+  });
+
+  it('treats the same id in different spaces as different goals', () => {
+    const mine = makeGoal();
+    const partners = makeGoal({ space: 'partner' });
+    const shared = makeGoal({ space: 'us' });
+    const legacy = makeGoal({ space: undefined });
+    expect(sameGoal(mine, mine)).toBe(true);
+    expect(sameGoal(mine, legacy)).toBe(true);
+    expect(sameGoal(mine, partners)).toBe(false);
+    expect(sameGoal(partners, shared)).toBe(false);
+    expect(sameGoal(makeGoal({ id: 'other-id' }), mine)).toBe(false);
+  });
+
+  it('removes goals by id and space only, keeping other spaces intact', () => {
+    const goals = [
+      makeGoal(),
+      makeGoal({ space: 'partner' }),
+      makeGoal({ id: 'other-goal', space: 'us' }),
+    ];
+    // Absent space means you: only the you-space entry with this id goes.
+    expect(removeGoal(goals, 'hdb-resale-by-28').map((goal) => [goal.id, goal.space ?? 'you'])).toEqual([
+      ['hdb-resale-by-28', 'partner'],
+      ['other-goal', 'us'],
+    ]);
+    // Naming the partner space removes the partner copy, not the you copy.
+    expect(removeGoal(goals, 'hdb-resale-by-28', 'partner').map((goal) => goal.space ?? 'you')).toEqual([
+      'you',
+      'us',
+    ]);
+    // An unknown id removes nothing.
+    expect(removeGoal(goals, 'no-such-goal')).toHaveLength(3);
   });
 });

@@ -127,15 +127,16 @@ interface DashboardTabProps {
   goals: TrackedGoal[];
   profile: UserProfile;
   monthKey: string;
-  onDeleteGoal: (goalId: string) => void;
+  /** Delete by the goal itself: the handler keys on id plus space. */
+  onDeleteGoal: (goal: TrackedGoal) => void;
   onLogSavings: (
-    goalId: string,
+    goal: TrackedGoal,
     monthKey: string,
     contributedSgd: number,
     note: string,
     contributor: 'you' | 'partner'
   ) => void;
-  onDeleteLog: (goalId: string, logMonthKey: string) => void;
+  onDeleteLog: (goal: TrackedGoal, logMonthKey: string, contributor: 'you' | 'partner') => void;
   onGoToPlanner: (tab: TabId) => void;
 }
 
@@ -251,15 +252,15 @@ function GoalSheet({
   space: SpaceId;
   goal: TrackedGoal;
   monthKey: string;
-  onDeleteGoal: (goalId: string) => void;
+  onDeleteGoal: (goal: TrackedGoal) => void;
   onLogSavings: (
-    goalId: string,
+    goal: TrackedGoal,
     monthKey: string,
     contributedSgd: number,
     note: string,
     contributor: 'you' | 'partner'
   ) => void;
-  onDeleteLog: (goalId: string, logMonthKey: string) => void;
+  onDeleteLog: (goal: TrackedGoal, logMonthKey: string, contributor: 'you' | 'partner') => void;
 }) {
   const [logMonth, setLogMonth] = useState(monthKey);
   const [logAmount, setLogAmount] = useState('');
@@ -290,8 +291,8 @@ function GoalSheet({
     if (!Number.isFinite(parsed) || parsed <= 0 || !/^\d{4}-\d{2}$/.test(logMonth)) {
       return;
     }
-    onLogSavings(goal.id, logMonth, Math.round(parsed * 100) / 100, logNote.trim(), logContributor);
-    setLastLogged(logMonth);
+    onLogSavings(goal, logMonth, Math.round(parsed * 100) / 100, logNote.trim(), logContributor);
+    setLastLogged(`${logMonth}:${logContributor}`);
     setLogAmount('');
     setLogNote('');
   }
@@ -307,7 +308,7 @@ function GoalSheet({
           >
             {status === 'behind' ? 'Behind plan' : status === 'ahead' ? 'Ahead of plan' : 'On plan'}
           </span>
-          <button type="button" className="btn btn-danger btn-small" onClick={() => onDeleteGoal(goal.id)}>
+          <button type="button" className="btn btn-danger btn-small" onClick={() => onDeleteGoal(goal)}>
             Stop tracking
           </button>
         </div>
@@ -434,26 +435,49 @@ function GoalSheet({
               </thead>
               <tbody>
                 {[...goal.logs]
-                  .sort((a, b) => (a.monthKey < b.monthKey ? 1 : -1))
-                  .map((log) => (
-                    <tr
-                      key={log.monthKey}
-                      className={log.monthKey === lastLogged ? 'log-row-new' : undefined}
-                    >
-                      <td>{log.monthKey}</td>
-                      <td className="money">{fmtMoney(log.contributedSgd)}</td>
-                      <td className="muted">{log.note ?? ''}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-small"
-                          onClick={() => onDeleteLog(goal.id, log.monthKey)}
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  .sort((a, b) =>
+                    a.monthKey < b.monthKey
+                      ? 1
+                      : a.monthKey > b.monthKey
+                        ? -1
+                        : (a.contributor ?? 'you') === (b.contributor ?? 'you')
+                          ? 0
+                          : (a.contributor ?? 'you') === 'you'
+                            ? -1
+                            : 1
+                  )
+                  .map((log) => {
+                    const contributor = log.contributor ?? 'you';
+                    return (
+                      <tr
+                        key={`${log.monthKey}-${contributor}`}
+                        className={`${log.monthKey}:${contributor}` === lastLogged ? 'log-row-new' : undefined}
+                      >
+                        <td>
+                          {log.monthKey}
+                          {isUsGoal ? (
+                            <span
+                              className={`contributor-stamp contributor-stamp-${contributor}`}
+                              title={`Logged by ${contributor === 'you' ? 'you' : 'the partner'}`}
+                            >
+                              {contributor}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="money">{fmtMoney(log.contributedSgd)}</td>
+                        <td className="muted">{log.note ?? ''}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-small"
+                            onClick={() => onDeleteLog(goal, log.monthKey, contributor)}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>

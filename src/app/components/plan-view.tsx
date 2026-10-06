@@ -7,7 +7,7 @@
  * section carries an engine badge saying who wrote the words.
  */
 import type { PlanJSON } from '../../lib/planner/build';
-import { fmtAssumptionValue, fmtMoney, fmtPct, type PlanResult } from './shared';
+import { assumptionLabel, fmtAssumptionValue, fmtMoney, fmtPct, type PlanResult } from './shared';
 
 function verdictLabel(status: PlanJSON['verdict']['status']): string {
   return status.replace('_', ' ');
@@ -318,10 +318,10 @@ function AssumptionChips({ plan }: { plan: PlanJSON }) {
           <div
             key={`${assumption.field}-${assumption.value}`}
             className="assumption-chip"
-            title={assumption.reason}
+            title={assumption.field}
           >
             <span className="assumption-value">
-              {assumption.field}: {fmtAssumptionValue(assumption.field, assumption.value)}
+              {assumptionLabel(assumption.field)}: {fmtAssumptionValue(assumption.field, assumption.value)}
             </span>
             <span className="assumption-reason">{assumption.reason}</span>
           </div>

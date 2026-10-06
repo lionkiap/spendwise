@@ -9,7 +9,8 @@
  * goalspec.ts). The prompt and plan flow are identical in every space; only
  * the profile the plan is built on changes.
  */
-import type { UserProfile } from '../../lib/planner/goalspec';
+import { employeeCpfContribution } from '../../lib/kernels';
+import { PLANNER_DEFAULTS, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
 import {
   DEFAULT_PROMPT,
   SAVINGS_EXAMPLE_PROMPT,
@@ -17,14 +18,16 @@ import {
   type PlanResult,
   type ProfileFormState,
   type SpaceId,
+  type StatusJson,
 } from './shared';
 import { PlanView } from './plan-view';
+import { AdvisorCard } from './advisor-card';
 
 interface PlannerTabProps {
   space: SpaceId;
   profileForm: ProfileFormState;
   onProfileField: (field: keyof ProfileFormState, raw: string) => void;
-  /** The combined household profile; used only in the us space. */
+  /** The planning profile of the space: personal in You and Partner, combined in Us. */
   householdProfile: UserProfile;
   prompt: string;
   onPromptChange: (value: string) => void;
@@ -33,6 +36,10 @@ interface PlannerTabProps {
   planResult: PlanResult | null;
   onPlan: () => void;
   onTrackGoal: () => void;
+  /** Connection truth from /api status, for the advisor's engine badge. */
+  connection: StatusJson['connection'] | null;
+  /** Apply an advisor revision to the planner state. */
+  onApplyRevision: (goalSpec: GoalSpec, profile: UserProfile) => void;
 }
 
 export function PlannerTab({
@@ -47,6 +54,8 @@ export function PlannerTab({
   planResult,
   onPlan,
   onTrackGoal,
+  connection,
+  onApplyRevision,
 }: PlannerTabProps) {
   return (
     <div className="stack">
@@ -69,6 +78,35 @@ export function PlannerTab({
               </dd>
             </div>
             <div className="household-row">
+              <dt>Take-home income</dt>
+              <dd>
+                {fmtMoney(
+                  householdProfile.takeHomeMonthlyIncome ??
+                  householdProfile.grossMonthlyIncome -
+                    employeeCpfContribution(householdProfile.grossMonthlyIncome)
+                )}
+                <span className="household-unit">
+                  /mo{householdProfile.takeHomeMonthlyIncome === undefined ? ' (estimated)' : ''}
+                </span>
+              </dd>
+            </div>
+            <div className="household-row">
+              <dt>Debt repayments</dt>
+              <dd>
+                {fmtMoney(householdProfile.monthlyDebtCommitments ?? 0)}
+                <span className="household-unit">/mo</span>
+              </dd>
+            </div>
+            <div className="household-row">
+              <dt>Emergency fund</dt>
+              <dd>
+                {householdProfile.emergencyReserveMonths ?? PLANNER_DEFAULTS.emergencyReserveMonths}
+                <span className="household-unit">
+                  {householdProfile.emergencyReserveMonths === undefined ? ' months (default)' : ' months'}
+                </span>
+              </dd>
+            </div>
+            <div className="household-row">
               <dt>Liquid savings</dt>
               <dd>{fmtMoney(householdProfile.liquidSavings)}</dd>
             </div>
@@ -81,6 +119,13 @@ export function PlannerTab({
               <dd>{fmtMoney(householdProfile.investmentsSgd ?? 0)}</dd>
             </div>
           </dl>
+          {householdProfile.takeHomeMonthlyIncome === undefined ? (
+            <p className="muted source-note">
+              Take-home is estimated: CPF contributions of about 20 percent of ordinary wages, up
+              to the S$6,000 wage ceiling, are deducted from combined gross pay. Both of you
+              stating a take-home figure in your own spaces replaces the estimate with the sum.
+            </p>
+          ) : null}
           <p className="muted source-note household-note">
             Edit each person&rsquo;s numbers in their own space; this card always shows the sum.
           </p>
@@ -164,9 +209,47 @@ export function PlannerTab({
               />
             </label>
           </div>
+          <div className="field-row">
+            <label className="field">
+              <span>Take-home income (S$, leave empty to estimate from gross minus CPF)</span>
+              <input
+                type="number"
+                min={0}
+                step={50}
+                value={profileForm.takeHomeMonthlyIncome}
+                placeholder="estimated"
+                onChange={(event) => onProfileField('takeHomeMonthlyIncome', event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Monthly debt repayments (S$, optional)</span>
+              <input
+                type="number"
+                min={0}
+                step={50}
+                value={profileForm.monthlyDebtCommitments}
+                placeholder="0"
+                onChange={(event) => onProfileField('monthlyDebtCommitments', event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Emergency fund (months, optional)</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={profileForm.emergencyReserveMonths}
+                placeholder="3"
+                onChange={(event) => onProfileField('emergencyReserveMonths', event.target.value)}
+              />
+            </label>
+          </div>
           <p className="muted source-note">
             An investment portfolio is credited toward the goal first and grows at its own rate;
-            leave the fields empty to plan on cash alone.
+            leave the fields empty to plan on cash alone. Take-home pay, debt repayments and the
+            emergency fund shape the affordability verdict: with no take-home stated, employee CPF
+            contributions of about 20 percent up to the S$6,000 wage ceiling are deducted from
+            gross pay before the surplus is measured.
           </p>
         </section>
       )}
@@ -221,6 +304,15 @@ export function PlannerTab({
                 Track this goal
               </button>
             </div>
+          ) : null}
+          {planResult.goalSpec !== undefined ? (
+            <AdvisorCard
+              space={space}
+              goalSpec={planResult.goalSpec}
+              profile={householdProfile}
+              connection={connection}
+              onApplyRevision={onApplyRevision}
+            />
           ) : null}
         </>
       ) : null}

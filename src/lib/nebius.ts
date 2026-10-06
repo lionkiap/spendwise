@@ -41,6 +41,43 @@ export function nanoModel(): string {
   return envValue('NEMOTRON_NANO_MODEL') ?? DEFAULT_NANO_MODEL;
 }
 
+/** Outcome of a Nebius health check. */
+export type NebiusHealth = 'verified' | 'configured' | 'unconfigured';
+
+/**
+ * Injectable model access for pingNebius so tests stub the network boundary.
+ * Same shape as chatJson.
+ */
+export type NebiusPingFetcher = (
+  system: string,
+  user: string,
+  model: string
+) => Promise<Record<string, unknown> | null>;
+
+/**
+ * Health check on the Nebius Token Factory endpoint with the smallest model.
+ * Formula: 'unconfigured' when no API key exists; otherwise one tiny chatJson
+ * call on the nano model, 'verified' when it returns a parsable JSON object
+ * and 'configured' when it returns null or throws. Never throws: every
+ * failure mode collapses to 'configured', meaning the key is present but the
+ * endpoint is not currently answering.
+ */
+export async function pingNebius(fetcher: NebiusPingFetcher = chatJson): Promise<NebiusHealth> {
+  if (!isConfigured()) {
+    return 'unconfigured';
+  }
+  try {
+    const reply = await fetcher(
+      'Reply with ONLY the JSON object {"ok":true} and no other text.',
+      'Health check. Reply with {"ok":true}.',
+      nanoModel()
+    );
+    return reply !== null ? 'verified' : 'configured';
+  } catch {
+    return 'configured';
+  }
+}
+
 function client(): OpenAI | null {
   const apiKey = envValue('NEBIUS_API_KEY');
   if (!apiKey) {

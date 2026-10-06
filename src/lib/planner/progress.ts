@@ -55,11 +55,15 @@ export interface TrackedGoal {
   /**
    * Whose space this goal belongs to: 'you', 'partner' or the shared 'us'.
    * Absent means 'you', so every goal stored before the couples feature stays
-   * the primary profile's. Purely informational for the UI; no function in
-   * this module branches on it, the math treats all logs alike.
+   * the primary profile's. The math never branches on it; only the storage
+   * helpers below (sameGoal, removeGoal) treat it as goal identity.
    */
   space?: 'you' | 'partner' | 'us';
-  /** Monthly savings logs, any order; month keys unique per goal by UI design. */
+  /**
+   * Monthly savings logs, any order. A (monthKey, contributor) pair is unique
+   * per goal: the same month can hold one 'you' entry and one 'partner' entry,
+   * enforced by upsertSavingsLog rather than by UI convention.
+   */
   logs: SavingsLog[];
 }
 
@@ -371,4 +375,76 @@ export function chartSeriesByContributor(
     you: months.map((month) => ({ month, balance: contributorBalance(goal, 'you', month) })),
     partner: months.map((month) => ({ month, balance: contributorBalance(goal, 'partner', month) })),
   };
+}
+
+/** The contributor a log belongs to; an absent contributor means 'you'. */
+function contributorOf(log: SavingsLog): 'you' | 'partner' {
+  return log.contributor ?? 'you';
+}
+
+/**
+ * Insert-or-replace one savings log entry.
+ *
+ * Storage identity: a log entry is keyed by monthKey AND contributor (absent
+ * contributor means 'you'), so the same month can hold one entry for you and
+ * one for the partner. Upserting an entry whose monthKey and contributor match
+ * an existing entry replaces that entry in place; any other entry is appended.
+ * Formula: logs' = logs where the entry e with e.monthKey = log.monthKey and
+ * contributorOf(e) = contributorOf(log) is replaced by log, else logs + [log].
+ * The input goal is never mutated; a new goal with a new log array is returned.
+ */
+export function upsertSavingsLog(goal: TrackedGoal, log: SavingsLog): TrackedGoal {
+  const index = goal.logs.findIndex(
+    (entry) => entry.monthKey === log.monthKey && contributorOf(entry) === contributorOf(log)
+  );
+  if (index < 0) {
+    return { ...goal, logs: [...goal.logs, log] };
+  }
+  const logs = goal.logs.slice();
+  logs[index] = log;
+  return { ...goal, logs };
+}
+
+/**
+ * Remove the savings log entry for one monthKey and contributor (absent
+ * contributor means 'you'). Every matching entry is dropped; the partner's
+ * entry for the same month survives. The input goal is never mutated.
+ */
+export function removeSavingsLog(
+  goal: TrackedGoal,
+  monthKey: string,
+  contributor?: 'you' | 'partner'
+): TrackedGoal {
+  const who = contributor ?? 'you';
+  return {
+    ...goal,
+    logs: goal.logs.filter(
+      (entry) => !(entry.monthKey === monthKey && contributorOf(entry) === who)
+    ),
+  };
+}
+
+/**
+ * Identity test for tracked goals across spaces: two goals are the same goal
+ * exactly when both id and space match, where an absent space means 'you'.
+ * The same slug in two different spaces is therefore NOT the same goal.
+ * Formula: same = a.id = b.id AND (a.space ?? 'you') = (b.space ?? 'you').
+ */
+export function sameGoal(a: TrackedGoal, b: TrackedGoal): boolean {
+  return a.id === b.id && (a.space ?? 'you') === (b.space ?? 'you');
+}
+
+/**
+ * Remove every goal with the given id from the given space (absent space means
+ * 'you') and return the remaining goals in their original order. Goals sharing
+ * the id in other spaces survive, so clearing 'you' never deletes the
+ * partner-space goal that happens to share the slug.
+ */
+export function removeGoal(
+  goals: TrackedGoal[],
+  id: string,
+  space?: 'you' | 'partner' | 'us'
+): TrackedGoal[] {
+  const where = space ?? 'you';
+  return goals.filter((goal) => !(goal.id === id && (goal.space ?? 'you') === where));
 }
