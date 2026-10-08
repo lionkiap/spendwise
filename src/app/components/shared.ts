@@ -22,6 +22,10 @@ import {
   type UserProfile,
 } from '../../lib/planner/goalspec';
 import { fillAssumptions } from '../../lib/planner/parse';
+
+/** Re-exported for the shell components that read profile shapes. */
+export type { UserProfile };
+
 import {
   goalNameFromSpec,
   goalSlug,
@@ -36,7 +40,7 @@ import {
 /* kept read-only as legacy inputs to migrateLegacyStorage and are never   */
 /* written or deleted; sw_custom_cards (v2) and sw_goals (v3) keep their   */
 /* shapes, sw_goals goals only gain the optional space and contributor     */
-/* fields.                                                                 */
+/* fields; sw_view (v5) persists the sidebar view.                         */
 /* ---------------------------------------------------------------------- */
 
 /** Pre-couples profile key; legacy input only, copied into sw_profile_you. */
@@ -57,6 +61,9 @@ export const LEDGER_PARTNER_KEY = 'sw_ledger_partner';
 export const LEDGER_US_KEY = 'sw_ledger_us';
 export const CUSTOM_CARDS_KEY = 'sw_custom_cards';
 export const GOALS_KEY = 'sw_goals';
+
+/** Key holding the persisted sidebar view ('dashboard' | 'goals' | 'cards' | 'adviser'). */
+export const VIEW_ACTIVE_KEY = 'sw_view';
 
 /** The three spaces a plan, wallet or ledger can live in. */
 export type SpaceId = 'you' | 'partner' | 'us';
@@ -93,7 +100,60 @@ export function spaceLabel(space: SpaceId): string {
 }
 
 export type PlanParser = 'nemotron' | 'local-fallback';
-export type TabId = 'planner' | 'progress' | 'adviser' | 'cards';
+
+/**
+ * The four sidebar views of the application shell. The old tab ids ('planner'
+ * | 'progress' | ...) were replaced by these; 'goals' now covers both the
+ * planner pipeline and the tracked-goal detail that used to be the Progress
+ * tab, and 'dashboard' is the landing view.
+ */
+export type ViewId = 'dashboard' | 'goals' | 'cards' | 'adviser';
+
+export const VIEW_IDS: ReadonlyArray<ViewId> = ['dashboard', 'goals', 'cards', 'adviser'];
+
+/**
+ * Pure guard for the sw_view payload: the stored value only counts when it
+ * names a known view; anything else (including null) collapses to null so the
+ * caller keeps the 'dashboard' default. Pure and DOM-free so tests cover it.
+ */
+export function parseStoredView(raw: string | null): ViewId | null {
+  return raw === 'dashboard' || raw === 'goals' || raw === 'cards' || raw === 'adviser'
+    ? raw
+    : null;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Dashboard: selected-goal identity and the goal templates.              */
+/* ---------------------------------------------------------------------- */
+
+/** localStorage key holding each space's selected dashboard goal id. */
+export function selectedGoalKeyFor(space: SpaceId): string {
+  return `sw_selected_goal_${space}`;
+}
+
+/**
+ * Which goal the dashboard should feature: the stored id when it still
+ * resolves in this space, else the first goal, else null (empty state).
+ * Pure so tests pin the fallback and deletion-recovery behaviour.
+ */
+export function pickSelectedGoal(
+  goals: ReadonlyArray<{ id: string }>,
+  storedId: string | null
+): { id: string } | null {
+  if (goals.length === 0) {
+    return null;
+  }
+  const stored = storedId !== null ? goals.find((goal) => goal.id === storedId) : undefined;
+  return stored ?? goals[0] ?? null;
+}
+
+/** Creation templates for the dashboard composer; each prefills editable text. */
+export const GOAL_TEMPLATES: ReadonlyArray<{ label: string; prefill: string }> = [
+  { label: 'Home', prefill: 'I want to buy a HDB worth about 600k by age 28' },
+  { label: 'Emergency fund', prefill: 'I want to save 15000 for an emergency fund in 2 years' },
+  { label: 'Car', prefill: 'I want to buy a car worth 80000 by age 30' },
+  { label: 'Custom', prefill: '' },
+];
 
 export const MILES_VALUATION_MIN = 1.4;
 export const MILES_VALUATION_MAX = 2.4;
@@ -771,6 +831,11 @@ export function parseBackup(raw: string): BackupParseResult {
         value === 'you' || value === 'partner' || value === 'us'
           ? { key, value }
           : { key, reason: 'not a space name' };
+    } else if (key === VIEW_ACTIVE_KEY) {
+      outcome =
+        parseStoredView(value) !== null
+          ? { key, value }
+          : { key, reason: 'not a view name' };
     } else {
       outcome = { key, reason: 'unrecognised key' };
     }

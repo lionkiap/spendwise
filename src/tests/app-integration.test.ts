@@ -16,6 +16,8 @@ import {
   GOALS_KEY,
   LEDGER_US_KEY,
   LEDGER_YOU_KEY,
+  pickSelectedGoal,
+  selectedGoalKeyFor,
   PROFILE_PARTNER_KEY,
   PROFILE_YOU_KEY,
   SPACE_ACTIVE_KEY,
@@ -101,10 +103,16 @@ const CUSTOM_CARD = {
   annualFeeSgd: 0,
 };
 
-const TRACKED_GOAL = {
+const TRACKED_GOAL: TrackedGoal = {
   id: 'hdb-resale-by-28',
   name: 'HDB resale at S$600k by age 28',
-  goalSpec: { kind: 'property_purchase', propertyType: 'hdb_resale', targetPriceSgd: 600000, deadlineAge: 28 },
+  goalSpec: {
+    kind: 'property_purchase',
+    propertyType: 'hdb_resale',
+    targetPriceSgd: 600000,
+    deadlineAge: 28,
+    firstProperty: true,
+  },
   targetSgd: 182139,
   requiredMonthlySgd: 350,
   ratePa: 0.018,
@@ -690,9 +698,9 @@ describe('adviser protected preferences per space', () => {
   });
 
   it('round trips protected categories per space preserving order', () => {
-    const you = ['dining', 'insurance'];
-    const partner = ['groceries'];
-    const us: string[] = [];
+    const you = ['dining', 'insurance'] as const;
+    const partner = ['groceries'] as const;
+    const us: ReadonlyArray<'dining'> = [];
     const rawYou = serializeAdviserPrefs(you);
     const rawPartner = serializeAdviserPrefs(partner);
     const rawUs = serializeAdviserPrefs(us);
@@ -835,5 +843,30 @@ describe('adviser apply and undo', () => {
     expect(restored.goals.every((goal) => goal.logs.every((log) => log.contributedSgd >= 0))).toBe(
       true
     );
+  });
+});
+
+describe('dashboard goal selection', () => {
+  const goalA = { id: 'wedding' };
+  const goalB = { id: 'hdb-resale' };
+
+  it('features the stored id when it still resolves in the space', () => {
+    expect(pickSelectedGoal([goalA, goalB], 'hdb-resale')).toBe(goalB);
+  });
+
+  it('falls back to the first goal when the stored id was deleted or never set', () => {
+    expect(pickSelectedGoal([goalA, goalB], 'deleted-id')).toBe(goalA);
+    expect(pickSelectedGoal([goalA, goalB], null)).toBe(goalA);
+  });
+
+  it('returns null for an empty space so the dashboard shows creation instead', () => {
+    expect(pickSelectedGoal([], 'anything')).toBeNull();
+    expect(pickSelectedGoal([], null)).toBeNull();
+  });
+
+  it('keys one selection per space', () => {
+    expect(selectedGoalKeyFor('you')).toBe('sw_selected_goal_you');
+    expect(selectedGoalKeyFor('us')).toBe('sw_selected_goal_us');
+    expect(selectedGoalKeyFor('you')).not.toBe(selectedGoalKeyFor('partner'));
   });
 });

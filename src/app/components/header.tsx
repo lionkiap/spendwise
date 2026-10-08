@@ -1,10 +1,12 @@
 'use client';
 
 /**
- * Sticky masthead: wordmark with a leaf square dot, the status pill fed by the
- * one /api/status fetch the page owns, the segmented tab control and, under
- * the tabs, the space switcher (You, Partner, Us) that decides whose plan the
- * whole page is showing.
+ * Top bar of the application shell, spanning the main area beside the
+ * sidebar: the You / Partner / Us space switcher (whose selection still
+ * clears any in-flight plan on the page), the status pill fed by the one
+ * /api/status fetch the page owns, and the prominent New goal primary
+ * button on the right. The wordmark shows only below 900px, where the
+ * sidebar is gone; on desktop the sidebar carries it.
  *
  * The pill never guesses: until the fetch resolves it shows the slate Local
  * mode dot. With a key configured it upgrades only to the ochre "Key set,
@@ -13,23 +15,16 @@
  * Every state carries a title attribute explaining what it means and how to
  * move to the next one.
  */
-import { spaceLabel, type SpaceId, type StatusJson, type TabId } from './shared';
+import { spaceLabel, type SpaceId, type StatusJson } from './shared';
 
 interface HeaderProps {
-  activeTab: TabId;
-  onSelectTab: (tab: TabId) => void;
   activeSpace: SpaceId;
   onSelectSpace: (space: SpaceId) => void;
   /** Connection truth from the page's single /api/status fetch; null while pending. */
   status: StatusJson | null;
+  /** The New goal button: switches to the Goals view and focuses the prompt. */
+  onNewGoal: () => void;
 }
-
-const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
-  { id: 'planner', label: 'Goal Planner' },
-  { id: 'progress', label: 'Progress' },
-  { id: 'adviser', label: 'Adviser' },
-  { id: 'cards', label: 'Card Maximizer' },
-];
 
 const SPACES: ReadonlyArray<SpaceId> = ['you', 'partner', 'us'];
 
@@ -39,7 +34,7 @@ const LOCAL_TITLE =
 const UNVERIFIED_TITLE =
   'A Nebius API key is set but the live health check did not complete, so the connection is unverified. Planning still works and falls back to the local parser whenever the endpoint does not answer.';
 
-export function Header({ activeTab, onSelectTab, activeSpace, onSelectSpace, status }: HeaderProps) {
+export function Header({ activeSpace, onSelectSpace, status, onNewGoal }: HeaderProps) {
   const verified = status !== null && status.nebiusConfigured && status.connection === 'verified';
   const keySetOnly = status !== null && status.nebiusConfigured && status.connection !== 'verified';
   const pillClass = verified ? 'status-pill-on' : keySetOnly ? 'status-pill-warn' : '';
@@ -54,32 +49,10 @@ export function Header({ activeTab, onSelectTab, activeSpace, onSelectSpace, sta
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <div className="header-row">
-          <span className="wordmark">
-            <span className="wordmark-dot" aria-hidden="true" />
-            SpendWise
-          </span>
-          <span className={`status-pill ${pillClass}`} title={pillTitle}>
-            <span className={`status-dot ${dotClass}`} aria-hidden="true" />
-            {pillLabel}
-          </span>
-        </div>
-        <nav className="tabs" role="tablist" aria-label="SpendWise tools">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              id={`tab-${tab.id}`}
-              aria-selected={activeTab === tab.id}
-              aria-controls={`panel-${tab.id}`}
-              className={`tab ${activeTab === tab.id ? 'tab-active' : ''}`}
-              onClick={() => onSelectTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <span className="wordmark header-wordmark">
+          <span className="wordmark-dot" aria-hidden="true" />
+          SpendWise
+        </span>
         <div className="space-row" role="radiogroup" aria-label="Whose plan">
           <span className="space-row-label" aria-hidden="true">
             Whose plan
@@ -98,6 +71,15 @@ export function Header({ activeTab, onSelectTab, activeSpace, onSelectSpace, sta
               </button>
             ))}
           </div>
+        </div>
+        <div className="header-end">
+          <span className={`status-pill ${pillClass}`} title={pillTitle}>
+            <span className={`status-dot ${dotClass}`} aria-hidden="true" />
+            {pillLabel}
+          </span>
+          <button type="button" className="btn btn-primary header-new-goal" onClick={onNewGoal}>
+            + New goal
+          </button>
         </div>
       </div>
     </header>

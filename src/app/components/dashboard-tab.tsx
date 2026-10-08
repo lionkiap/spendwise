@@ -34,7 +34,7 @@ import {
 } from '../../lib/planner/progress';
 import type { UserProfile } from '../../lib/planner/goalspec';
 
-import { fmtMoney, type SpaceId, type TabId } from './shared';
+import { fmtMoney, type SpaceId, type ViewId } from './shared';
 
 /* ------------------------------------------------------------------ */
 /* Motion helpers                                                      */
@@ -137,7 +137,7 @@ interface DashboardTabProps {
     contributor: 'you' | 'partner'
   ) => void;
   onDeleteLog: (goal: TrackedGoal, logMonthKey: string, contributor: 'you' | 'partner') => void;
-  onGoToPlanner: (tab: TabId) => void;
+  onNavigate: (view: ViewId) => void;
 }
 
 export function DashboardTab({
@@ -148,7 +148,7 @@ export function DashboardTab({
   onDeleteGoal,
   onLogSavings,
   onDeleteLog,
-  onGoToPlanner,
+  onNavigate,
 }: DashboardTabProps) {
   return (
     <div className="stack">
@@ -161,8 +161,8 @@ export function DashboardTab({
             from there: log what you save each month and watch the trajectory against the plan.
           </p>
           <div className="form-actions">
-            <button type="button" className="btn btn-primary" onClick={() => onGoToPlanner('planner')}>
-              Go to the Goal Planner
+            <button type="button" className="btn btn-primary" onClick={() => onNavigate('goals')}>
+              Go to Goals
             </button>
           </div>
         </section>
@@ -570,14 +570,17 @@ function ProgressRing({ ratio }: { ratio: number }) {
   );
 }
 
-function TrajectoryChart({
+export function TrajectoryChart({
   goal,
   elapsed,
   revealed,
+  height = 220,
 }: {
   goal: TrackedGoal;
   elapsed: number;
   revealed: boolean;
+  /** viewBox height; the dashboard hero passes a taller plot. */
+  height?: number;
 }) {
   const series = chartSeries(goal, elapsed);
   // As soon as the partner has logged anything, the single actual line is
@@ -598,7 +601,6 @@ function TrajectoryChart({
   }, [series]);
 
   const width = 640;
-  const height = 220;
   const padLeft = 56;
   const padRight = 16;
   const padTop = 18;

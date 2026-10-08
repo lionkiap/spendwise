@@ -1,15 +1,19 @@
 'use client';
 
 /**
- * SpendWise client shell: sticky header with a segmented switcher over three
- * tabs of client-side state, and three spaces underneath: You, Partner and Us.
+ * SpendWise client shell: a fixed sidebar (Dashboard, Goals, Cards, Adviser)
+ * plus a top bar that carries the You / Partner / Us space switcher, the
+ * Nemotron status pill and the New goal button. Below 900px the sidebar gives
+ * way to a compact labelled nav bar under the header, with the profile and
+ * data actions in a More sheet.
  *
- * Tab one (Goal Planner) posts the prompt and profile to /api/plan, renders
- * the returned PlanJSON and, under the plan, the what-if advisor that talks to
- * POST /api/advisor. Tab two (Progress) tracks logged savings against the
- * plan. Tab three (Card Maximizer) runs the deterministic routing engine
- * entirely in the browser with zero model calls, over the merged deck of
- * built-in cards plus the user's own saved cards.
+ * The Goals view holds the planning pipeline (prompt to /api/plan, rendered
+ * PlanJSON, what-if advisor over /api/advisor) followed by the tracked-goal
+ * detail that used to be the Progress tab. The Cards view runs the
+ * deterministic routing engine entirely in the browser with zero model calls,
+ * over the merged deck of built-in cards plus the user's own saved cards. The
+ * Adviser view is the conversational spending adviser. The active view
+ * persists under sw_view and defaults to the Dashboard.
  *
  * The you and partner spaces each carry their own profile form, wallet and
  * ledger; the us space carries a shared wallet and ledger and plans on
@@ -19,13 +23,14 @@
  * sw_wallet and sw_ledger into the you space once, and nothing is ever
  * deleted.
  *
- * Storage: sw_space_active, sw_profile_you, sw_profile_partner,
+ * Storage: sw_space_active, sw_view, sw_profile_you, sw_profile_partner,
  * sw_wallet_you, sw_wallet_partner, sw_wallet_us, sw_ledger_you,
  * sw_ledger_partner, sw_ledger_us, plus the shared sw_custom_cards and
  * sw_goals. Storage reads happen inside effects so server prerender and
  * client hydration always agree, and every key stays backward compatible.
- * The footer exports every sw_ key to a backup file, imports validated
- * backups back, and can seed the guided sample journey through the same keys.
+ * The sidebar (More sheet on mobile) exports every sw_ key to a backup file,
+ * imports validated backups back, and can seed the guided sample journey
+ * through the same keys.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -51,6 +56,10 @@ import { Header } from './components/header';
 import { PlannerTab } from './components/planner-tab';
 import { CardsTab } from './components/cards-tab';
 import { DashboardTab } from './components/dashboard-tab';
+import { DashboardView } from './components/dashboard-view';
+import { Sidebar } from './components/sidebar';
+import { MobileNav } from './components/mobile-nav';
+import { ProfileDrawer } from './components/profile-drawer';
 import { buildSampleMonth } from './components/ledger-manager';
 import {
   CUSTOM_CARDS_KEY,
@@ -62,6 +71,7 @@ import {
   PERSON_SPACE_IDS,
   SPACE_ACTIVE_KEY,
   SPACE_IDS,
+  VIEW_ACTIVE_KEY,
   adviserPrefsKeyFor,
   applyAdviserGoalRevision,
   buildBackup,
@@ -82,11 +92,14 @@ import {
   migrateLegacyStorage,
   parseAdviserPrefs,
   parseBackup,
+  parseStoredView,
+  pickSelectedGoal,
   profileFormFromRevised,
   profileFromForm,
   profileKeyFor,
   promptFromGoalSpec,
   serializeAdviserPrefs,
+  selectedGoalKeyFor,
   toggleProtectedCategory,
   walletKeyFor,
   type AdviserUndoSnapshot,
@@ -97,7 +110,7 @@ import {
   type ProfileFormState,
   type SpaceId,
   type StatusJson,
-  type TabId,
+  type ViewId,
 } from './components/shared';
 import { AdviserTab, type AdviserExchange } from './components/adviser-tab';
 
@@ -156,13 +169,17 @@ function readSpace(raw: string | null): SpaceId | null {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<TabId>('planner');
+  const [view, setView] = useState<ViewId>('dashboard');
   const [activeSpace, setActiveSpace] = useState<SpaceId>('you');
   const [hydrated, setHydrated] = useState(false);
   const [monthKey, setMonthKey] = useState('');
   const [importReport, setImportReport] = useState<string | null>(null);
   const [sampleIntroVisible, setSampleIntroVisible] = useState(false);
   const [status, setStatus] = useState<StatusJson | null>(null);
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  // Bumped by the header's New goal button so the Goals view focuses the
+  // goal prompt textarea after it renders.
+  const [focusPromptSignal, setFocusPromptSignal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Space epoch, bumped on every selectSpace. handlePlan captures it before
   // awaiting fetch and drops any reply whose epoch no longer matches, so an
@@ -171,7 +188,7 @@ export default function Home() {
   // the async closure; nothing renders from it.
   const spaceEpochRef = useRef(0);
 
-  // Planner tab state. The prompt and the latest plan are shared across
+  // Planner state. The prompt and the latest plan are shared across
   // spaces; the profile forms are per person.
   const [profileForms, setProfileForms] = useState<Record<PersonSpace, ProfileFormState>>({
     you: defaultProfileForm(),
@@ -186,7 +203,7 @@ export default function Home() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [planResult, setPlanResult] = useState<PlanResult | null>(null);
 
-  // Cards tab state: one wallet and one ledger per space.
+  // Cards state: one wallet and one ledger per space.
   const [wallets, setWallets] = useState<Record<SpaceId, string[]>>({
     you: [],
     partner: [],
@@ -199,10 +216,10 @@ export default function Home() {
     us: [],
   });
 
-  // Progress tab state. Goals carry their own space field.
+  // Tracked goals. Goals carry their own space field.
   const [goals, setGoals] = useState<TrackedGoal[]>([]);
 
-  // Adviser tab state, one record per space: transcripts and model-call
+  // Adviser state, one record per space: transcripts and model-call
   // counters live in memory, protected categories persist under
   // sw_adviser_prefs_<space>, and each space holds at most one pre-apply undo
   // snapshot (also in memory, one deep).
@@ -222,6 +239,21 @@ export default function Home() {
     us: [],
   });
   const [adviserUndo, setAdviserUndo] = useState<Partial<Record<SpaceId, AdviserUndoSnapshot>>>({});
+
+  // The dashboard's featured goal: one selection per space, persisted under
+  // sw_selected_goal_<space>. A selection whose goal was deleted falls back
+  // to the first goal of the space (pickSelectedGoal), never to a crash.
+  const [selectedGoalIds, setSelectedGoalIds] = useState<Record<SpaceId, string | null>>({
+    you: null,
+    partner: null,
+    us: null,
+  });
+  // A question seeded by the dashboard's contextual adviser, consumed once by
+  // the Adviser view and cleared again here.
+  const [adviserInitialQuestion, setAdviserInitialQuestion] = useState<string | null>(null);
+  // Bumped by the header's New goal button so the dashboard composer focuses
+  // its textarea after the view renders.
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0);
 
   // Connection truth: one fetch, shared by the header pill and the advisor's
   // engine badge. A failure keeps null, which both render as the local floor.
@@ -302,6 +334,17 @@ export default function Home() {
     if (storedSpace !== null) {
       setActiveSpace(storedSpace);
     }
+
+    const storedView = parseStoredView(window.localStorage.getItem(VIEW_ACTIVE_KEY));
+    if (storedView !== null) {
+      setView(storedView);
+    }
+
+    const selectionState: Partial<Record<SpaceId, string | null>> = {};
+    for (const space of SPACE_IDS) {
+      selectionState[space] = window.localStorage.getItem(selectedGoalKeyFor(space));
+    }
+    setSelectedGoalIds((previous) => ({ ...previous, ...selectionState }));
   }
 
   useEffect(() => {
@@ -392,6 +435,13 @@ export default function Home() {
     window.localStorage.setItem(SPACE_ACTIVE_KEY, activeSpace);
   }, [hydrated, activeSpace]);
 
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    window.localStorage.setItem(VIEW_ACTIVE_KEY, view);
+  }, [hydrated, view]);
+
   // Protected categories persist per space; later adviser turns read them
   // back from this state, so a toggle is respected by the next suggestion.
   useEffect(() => {
@@ -405,6 +455,20 @@ export default function Home() {
       );
     }
   }, [hydrated, adviserProtected]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    for (const space of SPACE_IDS) {
+      const id = selectedGoalIds[space];
+      if (id === null) {
+        window.localStorage.removeItem(selectedGoalKeyFor(space));
+      } else {
+        window.localStorage.setItem(selectedGoalKeyFor(space), id);
+      }
+    }
+  }, [hydrated, selectedGoalIds]);
 
   const customCards = useMemo(() => customCardsFromStored(customStored), [customStored]);
   const allCards: CardSpec[] = useMemo(() => mergeCards(CARDS, customCards), [customCards]);
@@ -461,7 +525,7 @@ export default function Home() {
   }
 
   function updateProfileField(field: keyof ProfileFormState, raw: string): void {
-    // Only the you and partner spaces render the editable form.
+    // Only the you and partner spaces carry the editable form.
     const person: PersonSpace = activeSpace === 'partner' ? 'partner' : 'you';
     setProfileForms((previous) => ({
       ...previous,
@@ -529,15 +593,21 @@ export default function Home() {
     setLedgers((previous) => ({ ...previous, [space]: [...previous[space], entry] }));
   }
 
-  // Progress tab handlers.
+  // Tracked-goal handlers.
 
-  function trackCurrentGoal(): void {
-    if (planResult === null || planResult.goalSpec === undefined || monthKey === '') {
-      return;
-    }
-    const spec = planResult.goalSpec;
-    const plan = planResult.plan;
-    const profile = activeProfile;
+  /**
+   * Freeze a validated spec plus its computed plan into a TrackedGoal.
+   * Shared by the Goals view's Plan button and the dashboard composer's
+   * Save and track, so both entry points capture the same fields.
+   */
+  function trackedGoalFrom(
+    spec: GoalSpec,
+    plan: PlanJSON,
+    space: SpaceId
+  ): TrackedGoal {
+    const profile =
+      space === 'partner' ? partnerProfile : space === 'us' ? combineProfiles(youProfile, partnerProfile) : youProfile;
+    const safeMonthKey = monthKey === '' ? currentMonthKey(new Date()) : monthKey;
     const schedule = plan.savingsSchedule;
     const lastBalance = schedule.length > 0 ? schedule[schedule.length - 1]?.balance : undefined;
     const name = goalNameFromSpec(spec);
@@ -552,7 +622,7 @@ export default function Home() {
       lastBalance !== undefined && lastBalance > 0
         ? lastBalance
         : Math.max(0, plan.requiredMonthlySavings * Math.max(1, (deadlineAge - profile.age) * 12));
-    const tracked: TrackedGoal = {
+    return {
       id: goalSlug(name),
       name,
       goalSpec: spec,
@@ -561,40 +631,55 @@ export default function Home() {
       ratePa: rateFromAssumptions(plan.assumptions, spec),
       startAge: profile.age,
       startSavingsSgd: Math.max(0, profile.liquidSavings),
-      // Freeze the investments leg exactly as the plan built it: the profile's
-      // portfolio today and the growth rate the plan credited it with (stated
-      // profile rate, else the investmentRatePa assumption chip, else the
-      // planner default; investmentRateFromPlan mirrors savingsCore). Goals
-      // stored before these fields keep the documented defaults in progress.ts
-      // (absent portfolio means 0, absent rate means ratePa), so old history
-      // hydrates and computes unchanged.
+      // Freeze the investments leg exactly as the plan built it; goals stored
+      // before these fields keep the documented defaults in progress.ts.
       startInvestmentsSgd: Math.max(0, profile.investmentsSgd ?? 0),
       investmentRatePa: investmentRateFromPlan(profile, plan.assumptions),
       deadlineAge,
-      startMonthKey: monthKey,
-      space: activeSpace,
+      startMonthKey: safeMonthKey,
+      space,
       logs: [],
     };
-    // Re-tracking never destroys history: uniqueGoalId gives the goal a fresh
-    // suffixed id (-2, -3, ...) whenever the same slug already exists in this
-    // space, and the new goal is appended. Because its id differs from every
-    // stored goal in the space, no sameGoal match can ever be replaced, so the
-    // logs already recorded against the earlier goal survive untouched. The
-    // same name tracked in another space never forces a suffix (uniqueGoalId
-    // scopes taken ids by space).
-    setGoals((previous) => [
-      ...previous,
-      { ...tracked, id: uniqueGoalId(previous, tracked.id, activeSpace) },
-    ]);
-    setActiveTab('progress');
+  }
+
+  /** Append a tracked goal, select it in its space and land on the dashboard. */
+  function appendTrackedGoal(spec: GoalSpec, plan: PlanJSON): void {
+    const space = activeSpace;
+    setGoals((previous) => {
+      const base = trackedGoalFrom(spec, plan, space);
+      // Re-tracking never destroys history: uniqueGoalId gives the goal a
+      // fresh suffixed id whenever the same slug already exists in this
+      // space, and the same name in another space never forces a suffix.
+      const id = uniqueGoalId(previous, base.id, space);
+      setSelectedGoalIds((selection) => ({ ...selection, [space]: id }));
+      return [...previous, { ...base, id }];
+    });
+    setView('dashboard');
+  }
+
+  function trackCurrentGoal(): void {
+    if (planResult === null || planResult.goalSpec === undefined) {
+      return;
+    }
+    appendTrackedGoal(planResult.goalSpec, planResult.plan);
+  }
+
+  /** The dashboard composer's Save and track: a locally rebuilt preview pair. */
+  function trackFromPreview(spec: GoalSpec, plan: PlanJSON): void {
+    appendTrackedGoal(spec, plan);
   }
 
   /** Delete by id plus space: a same-named goal in another space survives. */
   function deleteGoal(target: TrackedGoal): void {
     setGoals((previous) => removeGoal(previous, target.id, target.space));
+    setSelectedGoalIds((previous) =>
+      previous[target.space ?? 'you'] === target.id
+        ? { ...previous, [target.space ?? 'you']: null }
+        : previous
+    );
   }
 
-  // Adviser tab handlers. Every callback names its space explicitly: a turn
+  // Adviser handlers. Every callback names its space explicitly: a turn
   // that was asked in one space must land in that space's transcript even if
   // the user switched mid-flight.
 
@@ -693,8 +778,14 @@ export default function Home() {
     );
   }
 
-  async function handlePlan(): Promise<void> {
-    const trimmed = prompt.trim();
+  async function handlePlan(textOverride?: unknown): Promise<void> {
+    // The Goals button passes the click event; the dashboard composer passes
+    // the raw text. Only a real string overrides the shared prompt state.
+    const source = typeof textOverride === 'string' ? textOverride : prompt;
+    const trimmed = source.trim();
+    if (typeof textOverride === 'string' && textOverride !== prompt) {
+      setPrompt(textOverride);
+    }
     if (!trimmed) {
       setPlanError('Write a goal first, for example "buy a HDB worth 600k by age 28".');
       setPlanResult(null);
@@ -781,6 +872,31 @@ export default function Home() {
     setPlanError(null);
   }
 
+  /**
+   * The header's New goal button: both entry points share the dashboard
+   * composer, so focus it there once the view renders.
+   */
+  function handleNewGoal(): void {
+    setView('dashboard');
+    setComposerFocusSignal((previous) => previous + 1);
+  }
+
+  /** The dashboard composer's Build my plan. */
+  function handleBuildPlan(text: string): void {
+    void handlePlan(text);
+  }
+
+  /** The dashboard's contextual adviser: seed the question and jump over. */
+  function handleAskAdviser(question: string): void {
+    setAdviserInitialQuestion(question);
+    setView('adviser');
+  }
+
+  /** The take-home assumption chip's override, routed to the profile setter. */
+  function commitTakeHome(value: string): void {
+    updateProfileField('takeHomeMonthlyIncome', value);
+  }
+
   // Data protection: every sw_ key, serialised into one downloadable file.
 
   /** Export every sw_ prefixed localStorage key as a spendwise-backup JSON. */
@@ -853,7 +969,7 @@ export default function Home() {
 
   /**
    * Seed the guided sample journey through the existing storage keys, then
-   * land on the Us Progress tab with the four-step intro card showing. The
+   * land on the Us dashboard with the four-step intro card showing. The
    * button confirms first: seeding overwrites the profiles, personal wallets,
    * tracked goals and active space it touches.
    */
@@ -876,176 +992,236 @@ export default function Home() {
     // A stale plan from the pre-seed profile must not linger.
     setPlanResult(null);
     setPlanError(null);
-    setActiveTab('progress');
+    setView('dashboard');
     setSampleIntroVisible(true);
   }
 
+  const goalsInSpace = goals.filter((goal) => (goal.space ?? 'you') === activeSpace);
+
   return (
-    <>
-      <Header
-        activeTab={activeTab}
-        onSelectTab={setActiveTab}
-        activeSpace={activeSpace}
-        onSelectSpace={selectSpace}
-        status={status}
+    <div className="app-shell">
+      <Sidebar
+        view={view}
+        onSelectView={setView}
+        space={activeSpace}
+        profile={activeProfile}
+        onEditProfile={() => setProfileDrawerOpen(true)}
+        onExport={exportData}
+        onImport={() => fileInputRef.current?.click()}
+        onTrySample={trySampleJourney}
+        importReport={importReport}
       />
-      <main className="page">
-        <p className="page-intro">
-          Deterministic goal planning and credit card routing for Singapore. Illustrative
-          numbers, real math.
-        </p>
-
-        {activeTab === 'planner' ? (
-          <div role="tabpanel" id="panel-planner" aria-labelledby="tab-planner" className="stack">
-            <PlannerTab
-              space={activeSpace}
-              profileForm={profileForms[activeSpace === 'partner' ? 'partner' : 'you']}
-              onProfileField={updateProfileField}
-              householdProfile={activeProfile}
-              prompt={prompt}
-              onPromptChange={setPrompt}
-              planning={planning}
-              planError={planError}
-              planResult={planResult}
-              onPlan={handlePlan}
-              onTrackGoal={trackCurrentGoal}
-              connection={status === null ? null : status.connection}
-              onApplyRevision={applyAdvisorRevision}
-            />
-          </div>
-        ) : activeTab === 'progress' ? (
-          <div role="tabpanel" id="panel-progress" aria-labelledby="tab-progress" className="stack">
-            {sampleIntroVisible ? (
-              <section className="card journey-intro" aria-label="Sample journey guide">
-                <div className="card-title-row">
-                  <h2 className="card-title">Sample journey, in four steps</h2>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-small"
-                    onClick={() => setSampleIntroVisible(false)}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-                <ol className="action-list">
-                  <li>
-                    <span className="strong">Set your numbers.</span> The journey seeded both
-                    personal profiles, their wallets and this tracked Us goal. Open You and Partner
-                    to adjust income, savings and CPF.
-                  </li>
-                  <li>
-                    <span className="strong">Ask the advisor.</span> Back on the Goal Planner, ask a
-                    what-if such as &ldquo;what if my partner stops working for 6 months?&rdquo; and
-                    apply or keep each revision.
-                  </li>
-                  <li>
-                    <span className="strong">Log a month each.</span> The seeded goal already carries
-                    three months of savings from both contributors. Log this month in the Us space
-                    to keep the trajectory honest.
-                  </li>
-                  <li>
-                    <span className="strong">Export your data.</span> The footer button writes every
-                    SpendWise key to a backup JSON you can import in any browser.
-                  </li>
-                </ol>
-              </section>
-            ) : null}
-            <DashboardTab
-              space={activeSpace}
-              goals={goals.filter((goal) => (goal.space ?? 'you') === activeSpace)}
-              profile={activeProfile}
-              monthKey={monthKey}
-              onDeleteGoal={deleteGoal}
-              onLogSavings={logSavings}
-              onDeleteLog={deleteLog}
-              onGoToPlanner={setActiveTab}
-            />
-          </div>
-        ) : activeTab === 'adviser' ? (
-          <div role="tabpanel" id="panel-adviser" aria-labelledby="tab-adviser" className="stack">
-            <AdviserTab
-              space={activeSpace}
-              profile={activeProfile}
-              ledger={ledgers[activeSpace]}
-              goals={goals.filter((goal) => (goal.space ?? 'you') === activeSpace)}
-              walletNames={wallets[activeSpace].map(
-                (id) => allCards.find((card) => card.id === id)?.name ?? id
-              )}
-              protectedCategories={adviserProtected[activeSpace]}
-              onToggleProtected={toggleAdviserProtected}
-              onProtect={protectAdviserCategory}
-              transcript={adviserTranscripts[activeSpace]}
-              modelCallsUsed={adviserModelCalls[activeSpace]}
-              onTurnComplete={appendAdviserExchange}
-              onModelCalls={noteAdviserModelCalls}
-              onUpdateProfileField={updateProfileField}
-              onReviseGoal={reviseAdviserGoal}
-              onCaptureUndo={captureAdviserUndo}
-              onUndo={undoAdviser}
-              undoAvailable={adviserUndo[activeSpace] !== undefined}
-              connection={status === null ? null : status.connection}
-            />
-          </div>
-        ) : (
-          <div role="tabpanel" id="panel-cards" aria-labelledby="tab-cards" className="stack">
-            <CardsTab
-              wallet={wallets[activeSpace]}
-              onToggleWallet={toggleWallet}
-              allCards={allCards}
-              customStored={customStored}
-              onSaveCustom={saveCustomCard}
-              onDeleteCustom={deleteCustomCard}
-              ledger={ledgers[activeSpace]}
-              monthKey={monthKey}
-              milesValuation={activeProfile.milesValuationCents}
-              onMilesValuationChange={changeMilesValuation}
-              onDeleteLedgerEntry={deleteLedgerEntry}
-              onClearMonth={clearMonth}
-              onLoadSampleMonth={loadSampleMonth}
-              onAppendEntry={appendLedgerEntry}
-              ownerById={ownerById}
-            />
-          </div>
-        )}
-
-        <footer className="app-footer">
-          <p>
-            Educational hackathon demo, not financial advice. Duty tables, loan caps and card
-            terms are illustrative snapshots that must be verified against IRAS, MAS, CPF and
-            the issuers.
+      <div className="app-main">
+        <Header
+          activeSpace={activeSpace}
+          onSelectSpace={selectSpace}
+          status={status}
+          onNewGoal={handleNewGoal}
+        />
+        <MobileNav
+          view={view}
+          onSelectView={setView}
+          space={activeSpace}
+          profile={activeProfile}
+          onEditProfile={() => setProfileDrawerOpen(true)}
+          onExport={exportData}
+          onImport={() => fileInputRef.current?.click()}
+          onTrySample={trySampleJourney}
+          importReport={importReport}
+        />
+        <main className="page">
+          <p className="page-intro reading">
+            Deterministic goal planning and credit card routing for Singapore. Illustrative
+            numbers, real math.
           </p>
-          <div className="footer-actions">
-            <button type="button" className="btn btn-secondary btn-small" onClick={exportData}>
-              Export data
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-small"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Import data
-            </button>
-            <button type="button" className="btn btn-secondary btn-small" onClick={trySampleJourney}>
-              Try the sample journey
-            </button>
-            <input
-              ref={fileInputRef}
-              className="footer-file"
-              type="file"
-              accept="application/json,.json"
-              aria-label="Import a SpendWise backup file"
-              onChange={onImportFileChange}
-            />
-            {importReport !== null ? <span className="muted footer-report">{importReport}</span> : null}
-          </div>
-          <p className="source-note">
-            Export writes every SpendWise key in this browser to a spendwise-backup.json file.
-            Import validates the file first and only restores keys that pass the app&rsquo;s own
-            shape checks, so a tampered or partial backup never corrupts your data. The sample
-            journey asks before it overwrites anything.
-          </p>
-        </footer>
-      </main>
-    </>
+
+          {view === 'dashboard' ? (
+            <div className="view-panel stack" id="view-dashboard">
+              {sampleIntroVisible ? (
+                <SampleIntroCard onDismiss={() => setSampleIntroVisible(false)} />
+              ) : null}
+              <DashboardView
+                space={activeSpace}
+                goals={goalsInSpace}
+                profile={activeProfile}
+                monthKey={monthKey}
+                selectedGoalId={pickSelectedGoal(goalsInSpace, selectedGoalIds[activeSpace])?.id ?? null}
+                onSelectGoal={(id) =>
+                  setSelectedGoalIds((previous) => ({ ...previous, [activeSpace]: id }))
+                }
+                planning={planning}
+                planError={planError}
+                planResult={planResult}
+                onBuildPlan={handleBuildPlan}
+                onTrackFromPreview={trackFromPreview}
+                onAskAdviser={handleAskAdviser}
+                focusComposerSignal={composerFocusSignal}
+                onDeleteGoal={deleteGoal}
+                onLogSavings={logSavings}
+                onDeleteLog={deleteLog}
+                onNavigate={setView}
+              />
+            </div>
+          ) : view === 'goals' ? (
+            <div className="view-panel stack" id="view-goals">
+              <div className="view-head">
+                <h1 className="view-title">Goals</h1>
+              </div>
+              {sampleIntroVisible ? (
+                <SampleIntroCard onDismiss={() => setSampleIntroVisible(false)} />
+              ) : null}
+              <PlannerTab
+                space={activeSpace}
+                householdProfile={activeProfile}
+                prompt={prompt}
+                onPromptChange={setPrompt}
+                planning={planning}
+                planError={planError}
+                planResult={planResult}
+                onPlan={handlePlan}
+                onTrackGoal={trackCurrentGoal}
+                connection={status === null ? null : status.connection}
+                onApplyRevision={applyAdvisorRevision}
+                onTakeHomeCommit={commitTakeHome}
+                focusPromptSignal={focusPromptSignal}
+              />
+              <DashboardTab
+                space={activeSpace}
+                goals={goalsInSpace}
+                profile={activeProfile}
+                monthKey={monthKey}
+                onDeleteGoal={deleteGoal}
+                onLogSavings={logSavings}
+                onDeleteLog={deleteLog}
+                onNavigate={setView}
+              />
+            </div>
+          ) : view === 'adviser' ? (
+            <div className="view-panel stack" id="view-adviser">
+              <div className="view-head">
+                <h1 className="view-title">Adviser</h1>
+              </div>
+              <AdviserTab
+                space={activeSpace}
+                profile={activeProfile}
+                ledger={ledgers[activeSpace]}
+                goals={goalsInSpace}
+                walletNames={wallets[activeSpace].map(
+                  (id) => allCards.find((card) => card.id === id)?.name ?? id
+                )}
+                protectedCategories={adviserProtected[activeSpace]}
+                onToggleProtected={toggleAdviserProtected}
+                onProtect={protectAdviserCategory}
+                transcript={adviserTranscripts[activeSpace]}
+                modelCallsUsed={adviserModelCalls[activeSpace]}
+                onTurnComplete={appendAdviserExchange}
+                onModelCalls={noteAdviserModelCalls}
+                onUpdateProfileField={updateProfileField}
+                onReviseGoal={reviseAdviserGoal}
+                onCaptureUndo={captureAdviserUndo}
+                onUndo={undoAdviser}
+                undoAvailable={adviserUndo[activeSpace] !== undefined}
+                connection={status === null ? null : status.connection}
+                initialQuestion={adviserInitialQuestion ?? undefined}
+                onInitialQuestionConsumed={() => setAdviserInitialQuestion(null)}
+                selectedGoalId={pickSelectedGoal(goalsInSpace, selectedGoalIds[activeSpace])?.id ?? null}
+              />
+            </div>
+          ) : (
+            <div className="view-panel stack" id="view-cards">
+              <div className="view-head">
+                <h1 className="view-title">Cards</h1>
+              </div>
+              <CardsTab
+                wallet={wallets[activeSpace]}
+                onToggleWallet={toggleWallet}
+                allCards={allCards}
+                customStored={customStored}
+                onSaveCustom={saveCustomCard}
+                onDeleteCustom={deleteCustomCard}
+                ledger={ledgers[activeSpace]}
+                monthKey={monthKey}
+                milesValuation={activeProfile.milesValuationCents}
+                onMilesValuationChange={changeMilesValuation}
+                onDeleteLedgerEntry={deleteLedgerEntry}
+                onClearMonth={clearMonth}
+                onLoadSampleMonth={loadSampleMonth}
+                onAppendEntry={appendLedgerEntry}
+                ownerById={ownerById}
+              />
+            </div>
+          )}
+
+          <footer className="app-footer">
+            <p className="reading">
+              Educational hackathon demo, not financial advice. Duty tables, loan caps and card
+              terms are illustrative snapshots that must be verified against IRAS, MAS, CPF and
+              the issuers.
+            </p>
+            <p className="source-note reading">
+              Export writes every SpendWise key in this browser to a spendwise-backup.json file.
+              Import validates the file first and only restores keys that pass the app&rsquo;s own
+              shape checks, so a tampered or partial backup never corrupts your data. The sample
+              journey asks before it overwrites anything.
+            </p>
+          </footer>
+        </main>
+      </div>
+
+      <ProfileDrawer
+        open={profileDrawerOpen}
+        onClose={() => setProfileDrawerOpen(false)}
+        space={activeSpace}
+        profileForm={profileForms[activeSpace === 'partner' ? 'partner' : 'you']}
+        onProfileField={updateProfileField}
+        householdProfile={activeProfile}
+      />
+
+      {/* Visually hidden but still focusable file input behind the Import action. */}
+      <input
+        ref={fileInputRef}
+        className="footer-file"
+        type="file"
+        accept="application/json,.json"
+        aria-label="Import a SpendWise backup file"
+        onChange={onImportFileChange}
+      />
+    </div>
+  );
+}
+
+/** The four-step guide card shown right after the sample journey is seeded. */
+function SampleIntroCard({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <section className="card journey-intro" aria-label="Sample journey guide">
+      <div className="card-title-row">
+        <h2 className="card-title">Sample journey, in four steps</h2>
+        <button type="button" className="btn btn-ghost btn-small" onClick={onDismiss}>
+          Dismiss
+        </button>
+      </div>
+      <ol className="action-list">
+        <li>
+          <span className="strong">Set your numbers.</span> The journey seeded both personal
+          profiles, their wallets and this tracked Us goal. Open You and Partner to adjust income,
+          savings and CPF.
+        </li>
+        <li>
+          <span className="strong">Ask the advisor.</span> In the Goals view, ask a what-if such
+          as &ldquo;what if my partner stops working for 6 months?&rdquo; and apply or keep each
+          revision.
+        </li>
+        <li>
+          <span className="strong">Log a month each.</span> The seeded goal already carries three
+          months of savings from both contributors. Log this month in the Us space to keep the
+          trajectory honest.
+        </li>
+        <li>
+          <span className="strong">Export your data.</span> The Export data action in the sidebar
+          (or the More sheet on mobile) writes every SpendWise key to a backup JSON you can import
+          in any browser.
+        </li>
+      </ol>
+    </section>
   );
 }

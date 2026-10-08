@@ -12,19 +12,20 @@
  */
 
 :root {
-  --paper: #f5f1e8;
-  --paper-deep: #ece6d6;
-  --surface: #fffdf7;
-  --ink: #22261f;
-  --ink-soft: #4c5248;
-  --muted: #7b7f73;
-  --rule: #d8d1bd;
-  --rule-soft: #e6e0cf;
+  --paper: #f5f3ec;
+  --paper-deep: #eceada;
+  --surface: #fffefa;
+  --ink: #172a22;
+  --ink-soft: #3d4a43;
+  /* Muted on paper: #5b6660 over #f5f3ec measures about 5.4:1, past 4.5:1. */
+  --muted: #5b6660;
+  --rule: #e4dfd2;
+  --rule-soft: #eeeade;
 
-  --forest: #1e4d36;
-  --forest-deep: #173c2b;
-  --leaf: #a4d94e;
-  --leaf-soft: #e9f2d8;
+  --forest: #204d39;
+  --forest-deep: #183b2b;
+  --leaf: #c4e582;
+  --leaf-soft: #eef6dd;
 
   --ochre: #8a6114;
   --ochre-soft: #f3e8c9;
@@ -37,15 +38,17 @@
   --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
     Roboto, Helvetica, Arial, sans-serif;
 
-  --radius: 8px;
-  --radius-sm: 6px;
+  --radius: 16px;
+  --radius-lg: 20px;
+  --radius-sm: 10px;
   --space-1: 6px;
   --space-2: 10px;
   --space-3: 16px;
   --space-4: 24px;
   --space-5: 32px;
 
-  --focus-ring: 0 0 0 3px rgba(30, 77, 54, 0.16);
+  /* Lime focus accent: the glow around focused inputs and controls. */
+  --focus-ring: 0 0 0 3px rgba(196, 229, 130, 0.55);
 }
 
 * {
@@ -110,12 +113,178 @@ textarea {
   outline-offset: 2px;
 }
 
+/* ---------- Application shell ---------- */
+
+/*
+ * Sidebar shell: a fixed 216px rail on the left from 900px up, a main area
+ * beside it that grows with the viewport up to 1480px. Below 900px the rail
+ * disappears and .mobile-nav (rendered by the page) takes over.
+ */
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  display: none;
+}
+
+.app-main {
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .app-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 216px;
+    padding: var(--space-5) 20px var(--space-4);
+    background: var(--paper);
+    border-right: 1px solid var(--rule);
+    overflow-y: auto;
+  }
+
+  .app-main {
+    margin-left: 216px;
+  }
+}
+
+.sidebar-wordmark {
+  font-size: 1.3rem;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 9px 12px;
+  text-align: left;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+
+.side-nav-item:hover {
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+/* Active item: forest text and the one lime marker in the whole shell. */
+.side-nav-item-on {
+  background: var(--leaf-soft);
+  color: var(--forest);
+}
+
+.side-nav-item-on::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--leaf);
+}
+
+.side-nav-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.side-nav-label {
+  white-space: nowrap;
+}
+
+/* Quiet secondary area: profile summary plus data actions, pinned low. */
+
+.sidebar-secondary {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
+
+.sidebar-summary {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.sidebar-summary-space {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.sidebar-summary-detail {
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-text-action {
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  padding: 5px 0;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 3px;
+  transition: color 140ms ease-out, text-decoration-color 140ms ease-out;
+}
+
+.sidebar-text-action:hover {
+  color: var(--forest);
+  text-decoration-color: var(--forest);
+}
+
+.sidebar-edit-profile {
+  font-weight: 600;
+  color: var(--forest);
+}
+
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+}
+
+.sidebar-report {
+  margin: var(--space-1) 0 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 /* ---------- Page frame ---------- */
 
 .page {
-  max-width: 880px;
+  max-width: 1480px;
   margin: 0 auto;
-  padding: var(--space-4) 20px 72px;
+  padding: var(--space-5) clamp(20px, 4vw, 48px) 72px;
+}
+
+/* Reading measure for long-form prose; containers span wide, text does not. */
+.reading {
+  max-width: 72ch;
 }
 
 .page-intro {
@@ -135,21 +304,13 @@ textarea {
   line-height: 1.6;
 }
 
-.footer-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin: var(--space-2) 0;
-}
-
 .footer-report {
   font-size: 0.78rem;
   line-height: 1.5;
   flex: 1 1 240px;
 }
 
-/* Visually hidden but still focusable file input behind the Import button. */
+/* Visually hidden but still focusable file input behind the Import action. */
 .footer-file {
   position: absolute;
   width: 1px;
@@ -162,28 +323,48 @@ textarea {
   white-space: nowrap;
 }
 
-/* ---------- Masthead ---------- */
+/* ---------- Top bar ---------- */
 
 .site-header {
   position: sticky;
   top: 0;
   z-index: 30;
   background: var(--paper);
-  border-bottom: 2px solid var(--ink);
+  border-bottom: 1px solid var(--rule);
 }
 
 .site-header-inner {
-  max-width: 880px;
+  max-width: 1480px;
   margin: 0 auto;
-  padding: var(--space-3) 20px var(--space-2);
-}
-
-.header-row {
+  padding: var(--space-2) clamp(20px, 4vw, 48px);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* The wordmark lives in the sidebar on desktop; the header carries it only
+   below 900px, where the rail is gone. */
+.header-wordmark {
+  display: inline-flex;
+}
+
+@media (min-width: 900px) {
+  .header-wordmark {
+    display: none;
+  }
+}
+
+.header-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.header-new-goal {
+  white-space: nowrap;
 }
 
 .wordmark {
@@ -259,42 +440,124 @@ textarea {
   border: 1px solid var(--ochre);
 }
 
-/* Index-file tabs */
+/* ---------- Mobile navigation bar (below 900px) ---------- */
 
-.tabs {
+.mobile-nav {
   display: flex;
-  gap: 6px;
+  align-items: stretch;
+  gap: var(--space-1);
+  overflow-x: auto;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+  padding: 0 10px;
+  -webkit-overflow-scrolling: touch;
 }
 
-.tab {
-  border: 1px solid var(--rule);
-  border-bottom: none;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  background: var(--paper-deep);
+@media (min-width: 900px) {
+  .mobile-nav {
+    display: none;
+  }
+}
+
+.mobile-nav-item {
+  flex: none;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
   color: var(--ink-soft);
-  font-size: 0.76rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 9px 18px 8px;
-  transition: background-color 160ms ease-out, color 160ms ease-out,
-    border-color 160ms ease-out;
+  transition: color 140ms ease-out, border-color 140ms ease-out;
 }
 
-.tab:hover {
-  border-color: var(--ink-soft);
+.mobile-nav-item:hover {
   color: var(--ink);
 }
 
-.tab-active {
-  background: var(--surface);
-  border-color: var(--ink);
+.mobile-nav-item-on {
   color: var(--forest);
-  position: relative;
-  top: 1px;
+  border-bottom-color: var(--forest);
 }
 
-/* ---------- Cards and sections ---------- */
+/* ---------- Drawer: profile drawer and the mobile More sheet ---------- */
+
+.drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+
+.drawer-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(23, 42, 34, 0.34);
+}
+
+.drawer-panel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: 0 18px 48px -18px rgba(23, 42, 34, 0.4);
+}
+
+.drawer-panel-side {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 100vw);
+  border-left: 1px solid var(--rule);
+}
+
+.drawer-panel-bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 78vh;
+  border-top: 1px solid var(--rule);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.drawer-title {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  margin: 0;
+}
+
+.drawer-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.drawer-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-2);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drawer-panel {
+    animation: fadeUp 260ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
+  }
+}
+
+/* ---------- Cards, sections and view headings ---------- */
 
 .card {
   background: var(--surface);
@@ -302,7 +565,21 @@ textarea {
   border-radius: var(--radius);
   padding: var(--space-4);
   margin-bottom: var(--space-4);
-  box-shadow: 0 1px 0 rgba(34, 38, 31, 0.04);
+  box-shadow: 0 1px 0 rgba(23, 42, 34, 0.04);
+}
+
+.view-head {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.view-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 2.6vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0;
 }
 
 .card-title {
@@ -325,10 +602,8 @@ textarea {
 }
 
 .section-subtitle {
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--muted);
   margin: var(--space-4) 0 var(--space-2);
 }
@@ -336,7 +611,7 @@ textarea {
 .stack {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .strong {
@@ -994,10 +1269,9 @@ textarea {
 }
 
 .table th {
-  font-size: 0.66rem;
+  font-size: 0.74rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--muted);
   text-align: left;
   padding: 0 10px 8px;
@@ -1840,7 +2114,7 @@ textarea {
   }
 }
 
-[role='tabpanel'] {
+.view-panel {
   animation: fadeUp 420ms cubic-bezier(0.22, 0.61, 0.2, 1) both;
 }
 
@@ -2344,7 +2618,6 @@ textarea {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 8px 0 2px;
 }
 
 .space-row-label {
@@ -2358,23 +2631,21 @@ textarea {
 .space-group {
   display: inline-flex;
   border: 1px solid var(--rule);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--paper-deep);
 }
 
-/* Quiter sibling of the tab control: same small-caps stamp vocabulary,
-   smaller type and inset weight instead of a full raised sheet. */
+/* Prominent, sentence case: the switcher decides whose numbers the whole
+   app is showing, so it outranks the quiet pill beside it. */
 .space-switch {
   border: none;
   border-left: 1px solid var(--rule);
   background: transparent;
   color: var(--ink-soft);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  padding: 5px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 7px 16px;
   transition: background-color 160ms ease-out, color 160ms ease-out,
     box-shadow 160ms ease-out;
 }
@@ -3093,15 +3364,406 @@ textarea {
   }
 }
 
-/* Mobile: the four tabs and the space switcher wrap instead of overflowing,
-   and wide adviser tables scroll inside their own box. */
+/* Mobile: the nav bar scrolls horizontally when narrow, and wide adviser
+   tables scroll inside their own box. */
 @media (max-width: 600px) {
-  .tabs {
-    flex-wrap: wrap;
-  }
-
-  #panel-adviser table {
+  #view-adviser table {
     display: block;
     overflow-x: auto;
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Dashboard: the selected goal dominates, composer and adviser beside it  */
+/* ---------------------------------------------------------------------- */
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.dash-main,
+.dash-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* The hero: one dominant surface */
+
+.goal-hero {
+  background: var(--surface, #fffefa);
+  border: 1px solid var(--rule, #e4dfd2);
+  border-radius: 20px;
+  padding: 28px;
+  box-shadow: 0 1px 0 rgba(23, 42, 34, 0.04);
+}
+
+.goal-hero-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.goal-hero-name {
+  font-family: var(--font-display);
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 4px;
+}
+
+.goal-hero-sub {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.goal-hero-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.goal-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.goal-status-ahead {
+  background: #e9f2d8;
+  border-color: #a9c98f;
+  color: #2f5d3a;
+}
+
+.goal-status-on {
+  background: #f3e8c9;
+  border-color: #d9c48a;
+  color: #7a5410;
+}
+
+.goal-status-behind {
+  background: #f6e3da;
+  border-color: #dba38f;
+  color: #a03d26;
+}
+
+.goal-status-unknown {
+  background: #efece2;
+  border-color: #d8d2c2;
+  color: #5b6660;
+}
+
+.goal-hero-figures {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.goal-hero-figure-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hero-figure {
+  font-family: var(--font-display);
+  font-size: clamp(42px, 4.6vw, 64px);
+  font-weight: 700;
+  line-height: 1;
+  color: #172a22;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.hero-figure-sub {
+  font-size: 0.92rem;
+  color: #5b6660;
+  font-variant-numeric: tabular-nums;
+}
+
+.goal-hero-progress {
+  flex: 1 1 200px;
+  height: 14px;
+  border-radius: 999px;
+  background: #ece8da;
+  border: 1px solid #e4dfd2;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.goal-hero-progress-fill {
+  height: 100%;
+  background: #204d39;
+  border-radius: 999px;
+  transition: width 420ms cubic-bezier(0.22, 0.61, 0.2, 1);
+}
+
+.goal-hero-chart {
+  margin: 12px 0 4px;
+}
+
+.goal-hero-chart .chart-svg {
+  max-height: 360px;
+}
+
+.chart-table-alt {
+  margin-top: 10px;
+  font-size: 0.85rem;
+}
+
+.chart-table-alt summary {
+  cursor: pointer;
+  color: #5b6660;
+  font-size: 0.82rem;
+  padding: 4px 0;
+}
+
+.chart-table-alt summary:hover {
+  color: #204d39;
+}
+
+.chart-table-alt .table-scroll {
+  margin-top: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.goal-hero-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  border-top: 1px solid #e4dfd2;
+  padding-top: 16px;
+  margin-top: 8px;
+}
+
+.goal-hero-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.goal-fact-label {
+  font-size: 0.78rem;
+  color: #5b6660;
+}
+
+.goal-fact-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #172a22;
+}
+
+.goal-hero-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.goal-hero-primary {
+  min-width: 160px;
+}
+
+.goal-hero-log {
+  border-top: 1px dashed #d8d2c2;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+/* Composer and contextual adviser */
+
+.dash-composer {
+  position: relative;
+}
+
+.composer-label {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #172a22;
+  margin-bottom: 8px;
+}
+
+.composer-close {
+  display: none;
+}
+
+.composer-preview-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.composer-preview-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.composer-fact-label {
+  color: #5b6660;
+  flex: none;
+}
+
+.composer-fact-value {
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-clarify-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #172a22;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.dash-adviser .dash-suggestion {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+
+/* Empty state: creation is the focal point */
+
+.dash-empty-state {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 460px);
+  gap: 32px;
+  align-items: start;
+  max-width: 1080px;
+}
+
+.dash-empty-title {
+  font-family: var(--font-display);
+  font-size: clamp(30px, 3.2vw, 42px);
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 14px;
+}
+
+.dash-empty-copy p {
+  max-width: 56ch;
+}
+
+/* Other goals */
+
+.dash-others-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.dash-goal-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--surface, #fffefa);
+  border: 1px solid var(--rule, #e4dfd2);
+  border-radius: 16px;
+  padding: 16px 18px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.dash-goal-card:hover {
+  border-color: #204d39;
+  box-shadow: 0 4px 12px rgba(23, 42, 34, 0.08);
+}
+
+.dash-goal-card-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+
+.dash-goal-card-pct {
+  font-size: 0.8rem;
+  color: #5b6660;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dashboard responsive */
+
+@media (max-width: 1020px) {
+  .dash-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-empty-state {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 740px) {
+  .goal-hero {
+    padding: 20px 16px;
+    border-radius: 16px;
+  }
+
+  .hero-figure {
+    font-size: 40px;
+  }
+
+  .goal-hero-chart .chart-svg {
+    max-height: 260px;
+  }
+
+  /* Goal creation opens as a focused full-screen sheet on small screens. */
+  .dash-composer:not(.composer-open) {
+    display: none;
+  }
+
+  .dash-composer.composer-open {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    border-radius: 0;
+    overflow-y: auto;
+    padding: 20px 16px 48px;
+    box-shadow: none;
+  }
+
+  .composer-close {
+    display: inline-flex;
+    position: absolute;
+    top: 10px;
+    right: 12px;
+  }
+
+  .goal-hero-primary {
+    width: 100%;
+  }
+
+  .goal-hero-log .field-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

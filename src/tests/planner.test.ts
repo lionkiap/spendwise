@@ -65,6 +65,27 @@ describe('fallback parser', () => {
     }
   });
 
+  it('reads a bare amount after a savings verb: save 30000 in 3 years', () => {
+    const goal = parseGoalFallback(
+      'I want to save 30000 for our wedding in 3 years',
+      baseProfile
+    );
+    expect(goal?.kind).toBe('savings_target');
+    if (goal?.kind === 'savings_target') {
+      expect(goal.targetAmountSgd).toBe(30_000);
+      expect(goal.deadlineAge).toBe(baseProfile.age + 3);
+    }
+  });
+
+  it('never reads an age or a duration as money', () => {
+    const goal = parseGoalFallback('I want to save for a house by age 28', baseProfile);
+    expect(goal?.kind).toBe('savings_target');
+    if (goal?.kind === 'savings_target') {
+      expect(goal.targetAmountSgd).toBe(0);
+      expect(goal.deadlineAge).toBe(28);
+    }
+  });
+
   it('never reads plain ages as money and reports unstated fields as missing', () => {
     const goal = parseGoalFallback('I want to save money for a rainy day', baseProfile);
     expect(goal).not.toBeNull();

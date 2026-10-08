@@ -193,7 +193,7 @@ describe('migrateLegacyStorage', () => {
 
     const goals = JSON.parse(storage.getItem(GOALS_KEY) as string) as Array<{
       space?: string;
-      logs: Array<{ contributor?: string }>;
+      logs: Array<{ contributor?: string; note?: string }>;
     }>;
     expect(goals[0]?.space).toBe('you');
     expect(goals[0]?.logs[0]?.contributor).toBe('you');

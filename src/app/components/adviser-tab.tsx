@@ -27,7 +27,7 @@
  * fallback engine renders the limitation with actionable phrasing chips, and
  * nothing ever fakes a model reply.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { CATEGORY_LABELS } from '../../lib/adviser/ops';
 import { MAX_HISTORY_MESSAGES } from '../../lib/adviser/limits';
@@ -97,6 +97,12 @@ interface AdviserTabProps {
   undoAvailable: boolean;
   /** Connection truth for the honest header note; null while pending. */
   connection: StatusJson['connection'] | null;
+  /** A question seeded from elsewhere (the dashboard's contextual adviser). */
+  initialQuestion?: string;
+  /** Clears initialQuestion at the source once it has been sent. */
+  onInitialQuestionConsumed?: () => void;
+  /** The goal the dashboard has selected, carried into this conversation. */
+  selectedGoalId?: string | null;
 }
 
 /** "3 months" / "1 month" or the honest unknown. */
@@ -145,6 +151,9 @@ export function AdviserTab({
   onUndo,
   undoAvailable,
   connection,
+  initialQuestion,
+  onInitialQuestionConsumed,
+  selectedGoalId,
 }: AdviserTabProps) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -155,7 +164,26 @@ export function AdviserTab({
   /** Exchanges whose proposal was applied. */
   const [applied, setApplied] = useState<Record<number, boolean>>({});
 
-  const selectedGoal = goals.length === 1 ? goals[0] : undefined;
+  const selectedGoal =
+    (selectedGoalId !== undefined && selectedGoalId !== null
+      ? goals.find((goal) => goal.id === selectedGoalId)
+      : undefined) ?? (goals.length === 1 ? goals[0] : undefined);
+
+  // A question seeded from the dashboard sends exactly once, on mount or when
+  // it changes to a fresh non-empty value.
+  const seededRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (initialQuestion === undefined || initialQuestion === '' || seededRef.current === initialQuestion) {
+      return;
+    }
+    seededRef.current = initialQuestion;
+    onInitialQuestionConsumed?.();
+    void send(initialQuestion);
+    // send is stable enough for this one-shot; the effect deliberately runs
+    // only on initialQuestion changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialQuestion]);
+
 
   async function send(text: string): Promise<void> {
     const trimmed = text.trim();

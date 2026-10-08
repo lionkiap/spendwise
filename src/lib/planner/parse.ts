@@ -181,8 +181,8 @@ const SUFFIX_MULTIPLIERS: Record<string, number> = {
 
 /**
  * Largest money amount in the text, in SGD. A match needs a k/m/mil/million
- * suffix or a $ / s$ / SGD prefix so phrases like "by age 28" never read as
- * money.
+ * suffix, a $ / s$ / SGD prefix, or a bare number directly after a savings
+ * verb ("save 30000") so phrases like "by age 28" never read as money.
  */
 function largestMoneySgd(text: string): number | null {
   let largest: number | null = null;
@@ -205,6 +205,16 @@ function largestMoneySgd(text: string): number | null {
     const suffix = match[2]?.toLowerCase();
     const multiplier = suffix !== undefined ? SUFFIX_MULTIPLIERS[suffix] ?? 1 : 1;
     consider(amount * multiplier);
+  }
+  // Bare amount right after a savings verb: "save 30000", "save up to 30,000",
+  // "accumulate 25000". The lookahead keeps suffixed forms ("save 30k") for
+  // the first pattern, and ages or years elsewhere never match because they
+  // do not follow one of these verbs.
+  const afterVerb =
+    /(?:save|saving|saved|accumulate|set aside)(?:\s+up)?(?:\s+to)?\s+(\d[\d,]*(?:\.\d+)?)(?![a-z0-9])/gi;
+  for (const match of text.matchAll(afterVerb)) {
+    const amount = Number.parseFloat(match[1].replace(/,/g, ''));
+    consider(amount);
   }
   return largest;
 }

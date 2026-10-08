@@ -1,28 +1,24 @@
 'use client';
 
 /**
- * Goal Planner tab: profile mini-form, goal prompt and the rendered plan.
+ * Goal Planner: the goal prompt, the rendered plan and the what-if advisor.
  *
- * The profile card follows the active space: You and Partner render the same
- * editable form over their own profile, and Us renders a read-only Household
- * profile card with the two personal profiles summed (combineProfiles in
- * goalspec.ts). The prompt and plan flow are identical in every space; only
- * the profile the plan is built on changes.
- *
- * When no take-home figure is stated, the plan below carries an editable
- * assumption chip saying plainly that take-home was estimated from gross minus
- * employee CPF, so nothing about affordability is silently invented.
+ * The per-space profile form and the read-only Us household card moved to the
+ * ProfileDrawer (opened from the sidebar's Edit profile button); this view
+ * keeps everything that acts on a plan. When no take-home figure is stated,
+ * the plan below carries an editable assumption chip saying plainly that
+ * take-home was estimated from gross minus employee CPF, so nothing about
+ * affordability is silently invented.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { employeeCpfContribution } from '../../lib/kernels';
-import { PLANNER_DEFAULTS, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
+import type { GoalSpec, UserProfile } from '../../lib/planner/goalspec';
 import {
   DEFAULT_PROMPT,
   SAVINGS_EXAMPLE_PROMPT,
   fmtMoney,
   type PlanResult,
-  type ProfileFormState,
   type SpaceId,
   type StatusJson,
 } from './shared';
@@ -42,11 +38,11 @@ import { AdvisorCard } from './advisor-card';
 function TakeHomeAssumptionChip({
   profile,
   space,
-  onProfileField,
+  onTakeHomeCommit,
 }: {
   profile: UserProfile;
   space: SpaceId;
-  onProfileField: (field: keyof ProfileFormState, raw: string) => void;
+  onTakeHomeCommit: (value: string) => void;
 }) {
   const [draft, setDraft] = useState('');
   const cpfDeduction = employeeCpfContribution(profile.grossMonthlyIncome);
@@ -54,7 +50,7 @@ function TakeHomeAssumptionChip({
   const commit = (): void => {
     const trimmed = draft.trim();
     if (trimmed !== '') {
-      onProfileField('takeHomeMonthlyIncome', trimmed);
+      onTakeHomeCommit(trimmed);
     }
   };
   return (
@@ -110,8 +106,6 @@ function TakeHomeAssumptionChip({
 
 interface PlannerTabProps {
   space: SpaceId;
-  profileForm: ProfileFormState;
-  onProfileField: (field: keyof ProfileFormState, raw: string) => void;
   /** The planning profile of the space: personal in You and Partner, combined in Us. */
   householdProfile: UserProfile;
   prompt: string;
@@ -125,12 +119,22 @@ interface PlannerTabProps {
   connection: StatusJson['connection'] | null;
   /** Apply an advisor revision to the planner state. */
   onApplyRevision: (goalSpec: GoalSpec, profile: UserProfile) => void;
+  /**
+   * Commit a user-stated take-home figure for the active person (the
+   * assumption chip's override), routed to the same profile setter the
+   * drawer's form uses.
+   */
+  onTakeHomeCommit: (value: string) => void;
+  /**
+   * Bumped by the header's New goal button: each bump (after the first)
+   * focuses the goal prompt textarea. A counter, not a boolean, so two
+   * consecutive presses both land.
+   */
+  focusPromptSignal: number;
 }
 
 export function PlannerTab({
   space,
-  profileForm,
-  onProfileField,
   householdProfile,
   prompt,
   onPromptChange,
@@ -141,214 +145,25 @@ export function PlannerTab({
   onTrackGoal,
   connection,
   onApplyRevision,
+  onTakeHomeCommit,
+  focusPromptSignal,
 }: PlannerTabProps) {
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (focusPromptSignal > 0) {
+      promptRef.current?.focus();
+    }
+  }, [focusPromptSignal]);
+
   return (
     <div className="stack">
-      {space === 'us' ? (
-        <section className="card household-card">
-          <h2 className="card-title">Household profile</h2>
-          <dl className="household-list">
-            <div className="household-row">
-              <dt>Combined income</dt>
-              <dd>
-                {fmtMoney(householdProfile.grossMonthlyIncome)}
-                <span className="household-unit">/mo</span>
-              </dd>
-            </div>
-            <div className="household-row">
-              <dt>Combined expenses</dt>
-              <dd>
-                {fmtMoney(householdProfile.monthlyExpenses)}
-                <span className="household-unit">/mo</span>
-              </dd>
-            </div>
-            <div className="household-row">
-              <dt>Take-home income</dt>
-              <dd>
-                {fmtMoney(
-                  householdProfile.takeHomeMonthlyIncome ??
-                  householdProfile.grossMonthlyIncome -
-                    employeeCpfContribution(householdProfile.grossMonthlyIncome)
-                )}
-                <span className="household-unit">
-                  /mo{householdProfile.takeHomeMonthlyIncome === undefined ? ' (estimated)' : ''}
-                </span>
-              </dd>
-            </div>
-            <div className="household-row">
-              <dt>Debt repayments</dt>
-              <dd>
-                {fmtMoney(householdProfile.monthlyDebtCommitments ?? 0)}
-                <span className="household-unit">/mo</span>
-              </dd>
-            </div>
-            <div className="household-row">
-              <dt>Emergency fund</dt>
-              <dd>
-                {householdProfile.emergencyReserveMonths ?? PLANNER_DEFAULTS.emergencyReserveMonths}
-                <span className="household-unit">
-                  {householdProfile.emergencyReserveMonths === undefined ? ' months (default)' : ' months'}
-                </span>
-              </dd>
-            </div>
-            <div className="household-row">
-              <dt>Liquid savings</dt>
-              <dd>{fmtMoney(householdProfile.liquidSavings)}</dd>
-            </div>
-            <div className="household-row">
-              <dt>CPF OA</dt>
-              <dd>{fmtMoney(householdProfile.cpfOaBalance)}</dd>
-            </div>
-            <div className="household-row">
-              <dt>Investments</dt>
-              <dd>{fmtMoney(householdProfile.investmentsSgd ?? 0)}</dd>
-            </div>
-          </dl>
-          {householdProfile.takeHomeMonthlyIncome === undefined ? (
-            <p className="muted source-note">
-              Take-home is estimated from gross minus employee CPF: contributions of about 20
-              percent of ordinary wages, up to the S$6,000 wage ceiling, are deducted from combined
-              gross pay, because that money never reaches the account the saving must come from.
-              Both of you stating a take-home figure in your own spaces replaces the estimate with
-              the sum. Plans built here carry the same honest note as an assumption chip.
-            </p>
-          ) : null}
-          <p className="muted source-note household-note">
-            Edit each person&rsquo;s numbers in their own space; this card always shows the sum.
-          </p>
-        </section>
-      ) : (
-        <section className="card">
-          <h2 className="card-title">{space === 'partner' ? 'Partner&rsquo;s profile' : 'Your profile'}</h2>
-          <div className="field-row">
-            <label className="field">
-              <span>Age</span>
-              <input
-                type="number"
-                min={16}
-                max={80}
-                value={profileForm.age}
-                onChange={(event) => onProfileField('age', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Gross monthly income (S$)</span>
-              <input
-                type="number"
-                min={0}
-                step={100}
-                value={profileForm.grossMonthlyIncome}
-                onChange={(event) => onProfileField('grossMonthlyIncome', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Monthly expenses (S$)</span>
-              <input
-                type="number"
-                min={0}
-                step={100}
-                value={profileForm.monthlyExpenses}
-                onChange={(event) => onProfileField('monthlyExpenses', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Liquid savings (S$)</span>
-              <input
-                type="number"
-                min={0}
-                step={500}
-                value={profileForm.liquidSavings}
-                onChange={(event) => onProfileField('liquidSavings', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>CPF OA balance (S$)</span>
-              <input
-                type="number"
-                min={0}
-                step={500}
-                value={profileForm.cpfOaBalance}
-                onChange={(event) => onProfileField('cpfOaBalance', event.target.value)}
-              />
-            </label>
-          </div>
-          <div className="field-row">
-            <label className="field">
-              <span>Investments (S$, optional)</span>
-              <input
-                type="number"
-                min={0}
-                step={500}
-                value={profileForm.investmentsSgd}
-                placeholder="0"
-                onChange={(event) => onProfileField('investmentsSgd', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Expected return (% p.a., optional)</span>
-              <input
-                type="number"
-                min={0}
-                step={0.25}
-                value={profileForm.investmentRatePct}
-                placeholder="4.5"
-                onChange={(event) => onProfileField('investmentRatePct', event.target.value)}
-              />
-            </label>
-          </div>
-          <div className="field-row">
-            <label className="field">
-              <span>Take-home income (S$, leave empty to estimate from gross minus CPF)</span>
-              <input
-                type="number"
-                min={0}
-                step={50}
-                value={profileForm.takeHomeMonthlyIncome}
-                placeholder="estimated"
-                onChange={(event) => onProfileField('takeHomeMonthlyIncome', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>
-                Monthly debt repayments (S$, enter only commitments not already inside monthly
-                expenses)
-              </span>
-              <input
-                type="number"
-                min={0}
-                step={50}
-                value={profileForm.monthlyDebtCommitments}
-                placeholder="0"
-                onChange={(event) => onProfileField('monthlyDebtCommitments', event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Emergency fund (months, optional)</span>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={profileForm.emergencyReserveMonths}
-                placeholder="3"
-                onChange={(event) => onProfileField('emergencyReserveMonths', event.target.value)}
-              />
-            </label>
-          </div>
-          <p className="muted source-note">
-            An investment portfolio is credited toward the goal first and grows at its own rate;
-            leave the fields empty to plan on cash alone. Take-home pay, debt repayments and the
-            emergency fund shape the affordability verdict: with no take-home stated, employee CPF
-            contributions of about 20 percent up to the S$6,000 wage ceiling are deducted from
-            gross pay before the surplus is measured.
-          </p>
-        </section>
-      )}
-
       <section className="card">
         <h2 className="card-title">Your goal</h2>
         <label className="field">
           <span>Describe your goal in plain English</span>
           <textarea
+            ref={promptRef}
             className="prompt-box"
             rows={3}
             value={prompt}
@@ -388,7 +203,7 @@ export function PlannerTab({
             <TakeHomeAssumptionChip
               profile={householdProfile}
               space={space}
-              onProfileField={onProfileField}
+              onTakeHomeCommit={onTakeHomeCommit}
             />
           ) : null}
           {planResult.goalSpec !== undefined ? (
