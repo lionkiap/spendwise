@@ -44,6 +44,17 @@ The advisor is the conversation under the rendered plan (`src/app/components/adv
 - Works offline end to end: with no key the fallback classifier fields every question and the badge reads Offline advisor; with a key it reads Advisor by Nemotron or Advisor, Nemotron unverified, fed by the same `/api/status` truth as the header pill (`src/app/components/advisor-card.tsx:164`)
 - Starter chips for the demo: "Can we afford this flat?", "What if my partner stops working for 6 months?" and "What if we buy 2 years later?" (`src/app/components/advisor-card.tsx:47`)
 
+**Adviser tab**
+
+- A fourth tab carrying a full conversation per space, labelled This conversation is about: You, Partner or Us, with transcripts and protected-category preferences isolated per space (`src/app/components/adviser-tab.tsx`, preferences under `sw_adviser_prefs_<space>`)
+- Three starters that all work offline: Review my spending, Help me save more and Explore a what-if; follow-ups keep the last 12 messages of context
+- Deterministic operations behind every reply (`src/lib/adviser/ops.ts`): a spending review that reports exactly which logged records it used and never treats an empty ledger as zero spending, a month comparison that refuses to claim a trend until both months carry at least three records, reduction proposals capped at 25 percent of a category's recorded month (rounded down to S$10, never exceeding recorded reducible spending, always excluding your protected categories), goal impact from redirected savings and one-off expense previews with a shared-pot warning when other tracked goals compete for the same money
+- Every reply renders five fixed points: the data used, the change proposed, the monthly cash freed, the effect on the selected goal and the assumptions in play (`/api/adviser/chat`)
+- The model only classifies intent and may write prose that references numbered facts; literal figures matching no fact are rejected and the deterministic text stands (`src/lib/adviser/facts.ts`); user text travels as inert JSON data
+- Reviewable actions on every proposal: Preview this change, Adjust the amount, Compare with my current plan and Apply to my plan, with an exact-diff confirmation naming the space and goal, one-step Undo, and a test proving previews leave storage byte-identical (`src/app/components/shared.ts` preview and apply helpers)
+- Suggestions are labelled proposed budget savings, not money saved: nothing ever writes a savings log
+- Local mode is honest: unsupported questions get the limitation plus the supported phrasings as chips, and never a faked model reply; request costs are bounded by a 32 KB payload cap, trimmed history and a per-conversation model-call budget reported in the reply metadata (`src/lib/adviser/limits.ts`)
+
 **Data care**
 
 - Export data writes every `sw_` storage key into a downloadable `spendwise-backup` JSON with a versioned header; Import data validates each key against the existing guards and writes only what validates, reporting what it skipped (`src/app/components/shared.ts` buildBackup and parseBackup, tested in `src/tests/app-integration.test.ts`)
@@ -191,7 +202,8 @@ Everything SpendWise remembers lives in one browser's localStorage, hydrated ins
 | `sw_ledger_partner` | the partner ledger |
 | `sw_ledger_us` | the shared Us ledger |
 | `sw_custom_cards` | your saved custom cards, shared across all spaces |
-| `sw_goals` | the tracked goals with their savings logs; each goal carries its own `space` tag and each log its `contributor` |
+| `sw_goals` | the tracked goals with their savings logs; each goal carries its own `space` tag and each log its `contributor`; goals also freeze the starting investments and both growth rates so tracking agrees with planning (`src/lib/planner/progress.ts`) |
+| `sw_adviser_prefs_<space>` | per-space Adviser preferences: the protected categories proposals must never touch |
 
 **Migration of existing data.** On the first load after the spaces feature, `migrateLegacyStorage` (`src/app/components/shared.ts:374`, called first in the hydrate effect at `src/app/page.tsx:167`) copies the pre-couples `sw_profile`, `sw_wallet` and `sw_ledger` into `sw_profile_you`, `sw_wallet_you` and `sw_ledger_you` whenever those successors do not exist yet, then rewrites `sw_goals` in place adding `space: 'you'` to goals that lack the field and `contributor: 'you'` to logs that lack one. Existing data lands in the You space untouched: the legacy keys are kept as read-only inputs, never deleted, existing per-space keys are never overwritten and the second run is a no-op (`src/tests/spaces-ui.test.ts`).
 
@@ -280,6 +292,7 @@ Record these beats and link the video, plus a hosted demo URL, from PROJECT_DESC
 - **No accounts or server-side storage.** Every profile, wallet, ledger, custom card deck and tracked goal lives in one browser's localStorage and is gone if you clear it.
 - **Spaces are a local-device concept until accounts exist.** You, Partner and Us are three sets of keys in the same browser's localStorage, not two people's accounts: there is no sign-in, sync or sharing, and nothing authenticates a partner's numbers. Until accounts exist, whoever holds the device edits both people.
 - **localStorage persistence only, with export and import as the safety net.** Nothing syncs across devices, but the footer exports every `sw_` key to a validated backup file and imports it back, skipping any key that fails its guard rather than rejecting the whole file.
+- **The Adviser sees only what you logged.** Recorded transactions are partial by design and every adviser reply says which records it used; an empty month is unknown, never zero spending. Model classification has not been tested against the live endpoint (no key during development), and Adviser undo is one step deep per space.
 - **Heuristic fallback parser.** The offline parser is regex-based. It handles the documented prompt shapes (age deadlines, "in N years", k/m/mil/million amounts, percent rates) but not free-form phrasing. It silently returns a sentinel-zero amount when it cannot find a number, which the plan then surfaces as a missing field. The Nemotron path handles broader phrasing but needs a key.
 - **User-entered card terms are unverified.** A custom card is scored by the same engine as the built-ins, which is the point and also the risk: nothing validates your entered cap, rate or minimum spend against the issuer. The forced disclaimer and range checks are the only guards.
 - **Investments grow at an assumed rate.** The portfolio leg compounds at your stated rate or the 4.5 percent default for the whole horizon. There is no drawdown modeling, so an unlucky sequence of returns can leave the real outcome well below the projection.

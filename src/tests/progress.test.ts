@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { fvAnnuity, fvLump, pmtForFv } from '../lib/kernels';
+import { buildPlan } from '../lib/planner/build';
 import {
   actualBalance,
   actualPace,
   chartSeries,
   goalNameFromSpec,
+  goalSlug,
   monthKeyDiff,
   monthKeyOffset,
   monthsToTarget,
@@ -16,10 +18,12 @@ import {
   removeGoal,
   removeSavingsLog,
   sameGoal,
+  uniqueGoalId,
   upsertSavingsLog,
   type TrackedGoal,
 } from '../lib/planner/progress';
-import { PLANNER_DEFAULTS, type GoalSpec } from '../lib/planner/goalspec';
+import { fillAssumptions } from '../lib/planner/parse';
+import { PLANNER_DEFAULTS, type GoalSpec, type UserProfile } from '../lib/planner/goalspec';
 
 const GOAL_SPEC: GoalSpec = {
   kind: 'property_purchase',
@@ -296,5 +300,170 @@ describe('log and goal storage semantics', () => {
     ]);
     // An unknown id removes nothing.
     expect(removeGoal(goals, 'no-such-goal')).toHaveLength(3);
+  });
+
+  it('mints the bare slug when the space is free and suffixes when taken', () => {
+    const mine = makeGoal(); // hdb-resale-by-28, absent space means you
+    expect(uniqueGoalId([], 'hdb-resale-by-28')).toBe('hdb-resale-by-28');
+    expect(uniqueGoalId([mine], 'hdb-resale-by-28')).toBe('hdb-resale-by-28-2');
+    // The suffix chain walks past every taken candidate.
+    const alsoTaken = makeGoal({ id: 'hdb-resale-by-28-2' });
+    expect(uniqueGoalId([mine, alsoTaken], 'hdb-resale-by-28')).toBe('hdb-resale-by-28-3');
+    // Same slug in another space never forces a suffix (id plus space scoping).
+    expect(uniqueGoalId([mine], 'hdb-resale-by-28', 'partner')).toBe('hdb-resale-by-28');
+    expect(uniqueGoalId([mine], 'hdb-resale-by-28', 'us')).toBe('hdb-resale-by-28');
+    // An explicit you space collides with a legacy absent-space goal.
+    expect(uniqueGoalId([mine], 'hdb-resale-by-28', 'you')).toBe('hdb-resale-by-28-2');
+  });
+
+  it('suffixes re-tracking so the earlier history is never silently re-baselined', () => {
+    const first = makeGoal({ logs: [{ monthKey: '2026-01', contributedSgd: 1_000 }] });
+    // Re-track the same name in the same space: the fresh id differs, so
+    // storing the new goal cannot collide with the old sameGoal match and the
+    // logged history stays attached to the goal it was logged against.
+    const second: TrackedGoal = {
+      ...makeGoal({ id: uniqueGoalId([first], first.id, first.space), startSavingsSgd: 9_000 }),
+      logs: [],
+    };
+    expect(second.id).toBe('hdb-resale-by-28-2');
+    expect(sameGoal(first, second)).toBe(false);
+    const stored = [first, second];
+    expect(stored.filter((goal) => sameGoal(goal, first))).toEqual([first]);
+    expect(first.logs).toHaveLength(1);
+    expect(actualBalance(first, 1)).toBeGreaterThan(5_000);
+  });
+});
+
+describe('plan and progress agree on the investments leg', () => {
+  const spec: GoalSpec = {
+    kind: 'savings_target',
+    targetAmountSgd: 100_000,
+    deadlineAge: 32,
+    instrumentRatePa: 0.02,
+  };
+  const investor: UserProfile = {
+    age: 25,
+    grossMonthlyIncome: 6_000,
+    monthlyExpenses: 2_500,
+    liquidSavings: 20_000,
+    cpfOaBalance: 15_000,
+    milesValuationCents: 1.8,
+    investmentsSgd: 20_000,
+    investmentRatePa: 0.06,
+  };
+  const plan = buildPlan(spec, investor, fillAssumptions(spec, investor));
+  const months = Math.max(1, Math.round((spec.deadlineAge - investor.age) * 12));
+  const scheduleEnd = plan.savingsSchedule[plan.savingsSchedule.length - 1]?.balance ?? 0;
+
+  /**
+   * Freeze the plan the way page.tsx trackCurrentGoal does, both starting legs
+   * and both rates carried over so tracking measures the plan that was built.
+   */
+  function snapshotPlan(): TrackedGoal {
+    const name = goalNameFromSpec(spec);
+    return {
+      id: goalSlug(name),
+      name,
+      goalSpec: spec,
+      targetSgd: scheduleEnd,
+      requiredMonthlySgd: Math.max(0, plan.requiredMonthlySavings),
+      ratePa: rateFromAssumptions(plan.assumptions, spec),
+      startAge: investor.age,
+      startSavingsSgd: Math.max(0, investor.liquidSavings),
+      startInvestmentsSgd: Math.max(0, investor.investmentsSgd ?? 0),
+      investmentRatePa: investor.investmentRatePa,
+      deadlineAge: spec.deadlineAge,
+      startMonthKey: '2026-01',
+      space: 'you',
+      logs: [],
+    };
+  }
+
+  it('agreement: plannedBalance at the deadline matches the plan schedule end', () => {
+    expect(months).toBe(84);
+    expect(scheduleEnd).toBeCloseTo(100_000, 4);
+    const goal = snapshotPlan();
+    // Reproduction: without the investments leg progress lands about 30k short
+    // of the plan (the whole investments future value) at the deadline.
+    expect(plannedBalance(goal, months)).toBeCloseTo(scheduleEnd, 6);
+  });
+
+  it('freezes the stated savings rate instead of silently re-defaulting it', () => {
+    // The spec stated 2 percent so no assumption chip exists; reading the chip
+    // alone re-defaults to 1.8 percent and tracking drifts off the plan.
+    expect(plan.assumptions.find((entry) => entry.field === 'instrumentRatePa')).toBeUndefined();
+    expect(rateFromAssumptions(plan.assumptions)).toBe(PLANNER_DEFAULTS.instrumentRatePa);
+    expect(rateFromAssumptions(plan.assumptions, spec)).toBeCloseTo(0.02, 9);
+    expect(snapshotPlan().ratePa).toBeCloseTo(0.02, 9);
+  });
+
+  it('grows each leg at its own rate and never re-defaults the stated ratePa', () => {
+    const goal = makeGoal({
+      ratePa: 0.03,
+      startSavingsSgd: 5_000,
+      startInvestmentsSgd: 8_000,
+      investmentRatePa: 0.07,
+      requiredMonthlySgd: 400,
+    });
+    expect(plannedBalance(goal, 12)).toBeCloseTo(
+      fvLump(5_000, 0.03, 1) + fvLump(8_000, 0.07, 1) + fvAnnuity(400, 0.03, 12),
+      6
+    );
+  });
+
+  it('defaults an absent investments leg to 0 and an absent rate to ratePa', () => {
+    // A pre-existing goal without the new fields keeps its exact arithmetic.
+    const legacy = makeGoal();
+    expect(plannedBalance(legacy, 24)).toBeCloseTo(
+      fvLump(legacy.startSavingsSgd, legacy.ratePa, 2) +
+        fvAnnuity(legacy.requiredMonthlySgd, legacy.ratePa, 24),
+      6
+    );
+    // Investments present but rate absent: the leg grows at the savings rate.
+    const noRate = makeGoal({
+      ratePa: 0.03,
+      startSavingsSgd: 5_000,
+      startInvestmentsSgd: 8_000,
+      requiredMonthlySgd: 400,
+    });
+    expect(plannedBalance(noRate, 12)).toBeCloseTo(
+      fvLump(5_000, 0.03, 1) + fvLump(8_000, 0.03, 1) + fvAnnuity(400, 0.03, 12),
+      6
+    );
+  });
+
+  it('keeps logged contributions on the cash leg while the pot legs grow apart', () => {
+    const goal = makeGoal({
+      ratePa: 0.02,
+      startSavingsSgd: 5_000,
+      startInvestmentsSgd: 10_000,
+      investmentRatePa: 0.06,
+      logs: [{ monthKey: '2026-01', contributedSgd: 1_000 }],
+    });
+    expect(actualBalance(goal, 6)).toBeCloseTo(
+      fvLump(5_000, 0.02, 0.5) + fvLump(10_000, 0.06, 0.5) + fvLump(1_000, 0.02, 0.5),
+      6
+    );
+  });
+
+  it('projects the deadline balance with both legs at their own rates', () => {
+    const goal = makeGoal({
+      ratePa: 0.02,
+      startSavingsSgd: 5_000,
+      startInvestmentsSgd: 10_000,
+      investmentRatePa: 0.06,
+      logs: [{ monthKey: '2026-01', contributedSgd: 3_000 }],
+    });
+    expect(projectedBalanceAtDeadline(goal, 4)).toBeCloseTo(
+      fvLump(5_000, 0.02, 6) + fvLump(10_000, 0.06, 6) + fvAnnuity(750, 0.02, 72),
+      6
+    );
+  });
+
+  it('starts both chart lines at the whole pot, cash plus investments', () => {
+    const goal = makeGoal({ startInvestmentsSgd: 8_000 });
+    const series = chartSeries(goal, 0, 10);
+    expect(series.planned[0]).toEqual({ month: 0, balance: 5_000 + 8_000 });
+    expect(series.actual[0]).toEqual({ month: 0, balance: 5_000 + 8_000 });
   });
 });

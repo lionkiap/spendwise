@@ -30,7 +30,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { mergeCards } from '../lib/cards/custom';
-import type { CardSpec } from '../lib/cards/types';
+import type { CardSpec, ExpenseCategory } from '../lib/cards/types';
 import { CARDS } from '../lib/data/cards';
 import { buildPlan, type PlanJSON } from '../lib/planner/build';
 import { combineProfiles, type GoalSpec, type UserProfile } from '../lib/planner/goalspec';
@@ -42,6 +42,7 @@ import {
   removeGoal,
   removeSavingsLog,
   sameGoal,
+  uniqueGoalId,
   upsertSavingsLog,
   type TrackedGoal,
 } from '../lib/planner/progress';
@@ -61,12 +62,17 @@ import {
   PERSON_SPACE_IDS,
   SPACE_ACTIVE_KEY,
   SPACE_IDS,
+  adviserPrefsKeyFor,
+  applyAdviserGoalRevision,
   buildBackup,
   buildSampleJourney,
+  buildUndoSnapshot,
   clamp,
   currentMonthKey,
   customCardsFromStored,
   defaultProfileForm,
+  epochMatches,
+  investmentRateFromPlan,
   isCustomCardStored,
   isGoalSpec,
   isLedgerRow,
@@ -74,12 +80,16 @@ import {
   isTrackedGoal,
   ledgerKeyFor,
   migrateLegacyStorage,
+  parseAdviserPrefs,
   parseBackup,
   profileFormFromRevised,
   profileFromForm,
   profileKeyFor,
   promptFromGoalSpec,
+  serializeAdviserPrefs,
+  toggleProtectedCategory,
   walletKeyFor,
+  type AdviserUndoSnapshot,
   type CustomCardStored,
   type LedgerRow,
   type PersonSpace,
@@ -89,6 +99,7 @@ import {
   type StatusJson,
   type TabId,
 } from './components/shared';
+import { AdviserTab, type AdviserExchange } from './components/adviser-tab';
 
 /** A stored profile plus its miles valuation, or null when the key is absent. */
 function readStoredProfile(
@@ -153,6 +164,12 @@ export default function Home() {
   const [sampleIntroVisible, setSampleIntroVisible] = useState(false);
   const [status, setStatus] = useState<StatusJson | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Space epoch, bumped on every selectSpace. handlePlan captures it before
+  // awaiting fetch and drops any reply whose epoch no longer matches, so an
+  // in-flight plan built on one space's profile can never render in another
+  // space. A ref (not state) because the guard must read the live value inside
+  // the async closure; nothing renders from it.
+  const spaceEpochRef = useRef(0);
 
   // Planner tab state. The prompt and the latest plan are shared across
   // spaces; the profile forms are per person.
@@ -184,6 +201,27 @@ export default function Home() {
 
   // Progress tab state. Goals carry their own space field.
   const [goals, setGoals] = useState<TrackedGoal[]>([]);
+
+  // Adviser tab state, one record per space: transcripts and model-call
+  // counters live in memory, protected categories persist under
+  // sw_adviser_prefs_<space>, and each space holds at most one pre-apply undo
+  // snapshot (also in memory, one deep).
+  const [adviserTranscripts, setAdviserTranscripts] = useState<Record<SpaceId, AdviserExchange[]>>({
+    you: [],
+    partner: [],
+    us: [],
+  });
+  const [adviserModelCalls, setAdviserModelCalls] = useState<Record<SpaceId, number>>({
+    you: 0,
+    partner: 0,
+    us: 0,
+  });
+  const [adviserProtected, setAdviserProtected] = useState<Record<SpaceId, ExpenseCategory[]>>({
+    you: [],
+    partner: [],
+    us: [],
+  });
+  const [adviserUndo, setAdviserUndo] = useState<Partial<Record<SpaceId, AdviserUndoSnapshot>>>({});
 
   // Connection truth: one fetch, shared by the header pill and the advisor's
   // engine badge. A failure keeps null, which both render as the local floor.
@@ -251,6 +289,14 @@ export default function Home() {
         setGoals(stored.filter(isTrackedGoal));
       }
     }
+
+    const prefsState: Partial<Record<SpaceId, ExpenseCategory[]>> = {};
+    for (const space of SPACE_IDS) {
+      prefsState[space] = parseAdviserPrefs(
+        window.localStorage.getItem(adviserPrefsKeyFor(space))
+      );
+    }
+    setAdviserProtected((previous) => ({ ...previous, ...prefsState }));
 
     const storedSpace = readSpace(window.localStorage.getItem(SPACE_ACTIVE_KEY));
     if (storedSpace !== null) {
@@ -345,6 +391,20 @@ export default function Home() {
     }
     window.localStorage.setItem(SPACE_ACTIVE_KEY, activeSpace);
   }, [hydrated, activeSpace]);
+
+  // Protected categories persist per space; later adviser turns read them
+  // back from this state, so a toggle is respected by the next suggestion.
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    for (const space of SPACE_IDS) {
+      window.localStorage.setItem(
+        adviserPrefsKeyFor(space),
+        serializeAdviserPrefs(adviserProtected[space])
+      );
+    }
+  }, [hydrated, adviserProtected]);
 
   const customCards = useMemo(() => customCardsFromStored(customStored), [customStored]);
   const allCards: CardSpec[] = useMemo(() => mergeCards(CARDS, customCards), [customCards]);
@@ -498,32 +558,100 @@ export default function Home() {
       goalSpec: spec,
       targetSgd: target,
       requiredMonthlySgd: Math.max(0, plan.requiredMonthlySavings),
-      ratePa: rateFromAssumptions(plan.assumptions),
+      ratePa: rateFromAssumptions(plan.assumptions, spec),
       startAge: profile.age,
       startSavingsSgd: Math.max(0, profile.liquidSavings),
+      // Freeze the investments leg exactly as the plan built it: the profile's
+      // portfolio today and the growth rate the plan credited it with (stated
+      // profile rate, else the investmentRatePa assumption chip, else the
+      // planner default; investmentRateFromPlan mirrors savingsCore). Goals
+      // stored before these fields keep the documented defaults in progress.ts
+      // (absent portfolio means 0, absent rate means ratePa), so old history
+      // hydrates and computes unchanged.
+      startInvestmentsSgd: Math.max(0, profile.investmentsSgd ?? 0),
+      investmentRatePa: investmentRateFromPlan(profile, plan.assumptions),
       deadlineAge,
       startMonthKey: monthKey,
       space: activeSpace,
       logs: [],
     };
-    // Re-tracking the same goal re-baselines it: the old logs belong to the
-    // old starting point. Goal identity is id plus space (sameGoal), so the
-    // same goal name tracked in You and in Us keeps two separate histories.
-    setGoals((previous) => {
-      const existing = previous.findIndex((goal) => sameGoal(goal, tracked));
-      if (existing === -1) {
-        return [...previous, tracked];
-      }
-      const next = [...previous];
-      next[existing] = tracked;
-      return next;
-    });
+    // Re-tracking never destroys history: uniqueGoalId gives the goal a fresh
+    // suffixed id (-2, -3, ...) whenever the same slug already exists in this
+    // space, and the new goal is appended. Because its id differs from every
+    // stored goal in the space, no sameGoal match can ever be replaced, so the
+    // logs already recorded against the earlier goal survive untouched. The
+    // same name tracked in another space never forces a suffix (uniqueGoalId
+    // scopes taken ids by space).
+    setGoals((previous) => [
+      ...previous,
+      { ...tracked, id: uniqueGoalId(previous, tracked.id, activeSpace) },
+    ]);
     setActiveTab('progress');
   }
 
   /** Delete by id plus space: a same-named goal in another space survives. */
   function deleteGoal(target: TrackedGoal): void {
     setGoals((previous) => removeGoal(previous, target.id, target.space));
+  }
+
+  // Adviser tab handlers. Every callback names its space explicitly: a turn
+  // that was asked in one space must land in that space's transcript even if
+  // the user switched mid-flight.
+
+  function appendAdviserExchange(space: SpaceId, exchange: AdviserExchange): void {
+    setAdviserTranscripts((previous) => ({ ...previous, [space]: [...previous[space], exchange] }));
+  }
+
+  function noteAdviserModelCalls(space: SpaceId, used: number): void {
+    setAdviserModelCalls((previous) => ({ ...previous, [space]: used }));
+  }
+
+  function toggleAdviserProtected(space: SpaceId, category: ExpenseCategory): void {
+    setAdviserProtected((previous) => ({
+      ...previous,
+      [space]: toggleProtectedCategory(previous[space], category),
+    }));
+  }
+
+  /** A protect_category op adds the category when it is not protected yet. */
+  function protectAdviserCategory(space: SpaceId, category: ExpenseCategory): void {
+    setAdviserProtected((previous) => ({
+      ...previous,
+      [space]: previous[space].includes(category)
+        ? previous[space]
+        : [...previous[space], category],
+    }));
+  }
+
+  /**
+   * Apply a goal-level adviser revision: the goal keeps its id, space and
+   * every savings log; only the spec, deadline age and display name move.
+   */
+  function reviseAdviserGoal(space: SpaceId, goalId: string, revisedGoalSpec: GoalSpec): void {
+    setGoals((previous) => applyAdviserGoalRevision(previous, goalId, space, revisedGoalSpec));
+  }
+
+  /** Snapshot both profile forms and every goal, one deep, before an apply. */
+  function captureAdviserUndo(space: SpaceId): void {
+    setAdviserUndo((previous) => ({
+      ...previous,
+      [space]: buildUndoSnapshot(profileForms, goals),
+    }));
+  }
+
+  /** One-step Undo: restore the snapshot wholesale and drop it. */
+  function undoAdviser(space: SpaceId): void {
+    const snapshot = adviserUndo[space];
+    if (snapshot === undefined) {
+      return;
+    }
+    setProfileForms(snapshot.profileForms);
+    setGoals(snapshot.goals);
+    setAdviserUndo((previous) => {
+      const next = { ...previous };
+      delete next[space];
+      return next;
+    });
   }
 
   /**
@@ -572,6 +700,11 @@ export default function Home() {
       setPlanResult(null);
       return;
     }
+    // Capture the space epoch before any await: the reply may only land while
+    // this value still equals spaceEpochRef.current. A space switch mid-flight
+    // bumps the ref, so the stale reply is dropped instead of rendered in the
+    // new space (selectSpace already cleared the on-screen plan).
+    const epoch = spaceEpochRef.current;
     setPlanning(true);
     setPlanError(null);
     try {
@@ -581,6 +714,9 @@ export default function Home() {
         body: JSON.stringify({ prompt: trimmed, profile: activeProfile }),
       });
       const data: unknown = await response.json();
+      if (!epochMatches(epoch, spaceEpochRef.current)) {
+        return;
+      }
       if (!response.ok) {
         const message =
           data !== null && typeof data === 'object' && 'error' in data
@@ -597,8 +733,10 @@ export default function Home() {
         });
       }
     } catch {
-      setPlanError('Could not reach the planner API. Check that the server is running.');
-      setPlanResult(null);
+      if (epochMatches(epoch, spaceEpochRef.current)) {
+        setPlanError('Could not reach the planner API. Check that the server is running.');
+        setPlanResult(null);
+      }
     } finally {
       setPlanning(false);
     }
@@ -633,6 +771,9 @@ export default function Home() {
   }
 
   function selectSpace(space: SpaceId): void {
+    // Every switch bumps the epoch first, so any plan request still in flight
+    // for the previous space drops its reply when it lands.
+    spaceEpochRef.current += 1;
     setActiveSpace(space);
     // A plan computed against another space's profile must not linger on
     // screen after the switch; the Plan button is the only replan trigger.
@@ -818,6 +959,31 @@ export default function Home() {
               onLogSavings={logSavings}
               onDeleteLog={deleteLog}
               onGoToPlanner={setActiveTab}
+            />
+          </div>
+        ) : activeTab === 'adviser' ? (
+          <div role="tabpanel" id="panel-adviser" aria-labelledby="tab-adviser" className="stack">
+            <AdviserTab
+              space={activeSpace}
+              profile={activeProfile}
+              ledger={ledgers[activeSpace]}
+              goals={goals.filter((goal) => (goal.space ?? 'you') === activeSpace)}
+              walletNames={wallets[activeSpace].map(
+                (id) => allCards.find((card) => card.id === id)?.name ?? id
+              )}
+              protectedCategories={adviserProtected[activeSpace]}
+              onToggleProtected={toggleAdviserProtected}
+              onProtect={protectAdviserCategory}
+              transcript={adviserTranscripts[activeSpace]}
+              modelCallsUsed={adviserModelCalls[activeSpace]}
+              onTurnComplete={appendAdviserExchange}
+              onModelCalls={noteAdviserModelCalls}
+              onUpdateProfileField={updateProfileField}
+              onReviseGoal={reviseAdviserGoal}
+              onCaptureUndo={captureAdviserUndo}
+              onUndo={undoAdviser}
+              undoAvailable={adviserUndo[activeSpace] !== undefined}
+              connection={status === null ? null : status.connection}
             />
           </div>
         ) : (

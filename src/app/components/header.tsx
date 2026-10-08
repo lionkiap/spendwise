@@ -27,6 +27,7 @@ interface HeaderProps {
 const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'planner', label: 'Goal Planner' },
   { id: 'progress', label: 'Progress' },
+  { id: 'adviser', label: 'Adviser' },
   { id: 'cards', label: 'Card Maximizer' },
 ];
 

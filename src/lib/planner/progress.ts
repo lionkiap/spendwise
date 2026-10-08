@@ -29,7 +29,12 @@ export interface SavingsLog {
 /**
  * A plan frozen for tracking. startSavingsSgd and startAge capture the profile
  * as it was when the user pressed Track, so later profile edits never rewrite
- * history; deleting and re-tracking re-baselines the goal.
+ * history; deleting and re-tracking re-baselines the goal. The optional
+ * startInvestmentsSgd and investmentRatePa freeze the plan's investments leg
+ * the same way, so progress measures the two-leg plan the planner built:
+ * cash (startSavingsSgd, requiredMonthlySgd and every log) grows at ratePa
+ * while the portfolio grows at investmentRatePa. Both default so that every
+ * goal stored before they existed keeps its exact arithmetic.
  */
 export interface TrackedGoal {
   /** Stable slug id derived from the name. */
@@ -48,6 +53,18 @@ export interface TrackedGoal {
   startAge: number;
   /** Liquid savings when tracking started. */
   startSavingsSgd: number;
+  /**
+   * Investment portfolio the plan credited at its own rate. Absent or invalid
+   * means 0, which reproduces the single-leg arithmetic exactly.
+   */
+  startInvestmentsSgd?: number;
+  /**
+   * Annual growth rate of the investments leg (decimal). Absent or invalid
+   * means the goal's ratePa, so the two legs share one rate unless the plan
+   * said otherwise. ratePa itself is the stated savings rate actually used and
+   * is never re-defaulted.
+   */
+  investmentRatePa?: number;
   /** Deadline age from the plan. */
   deadlineAge: number;
   /** "YYYY-MM" when tracking started. */
@@ -95,8 +112,25 @@ export function monthKeyOffset(key: string, n: number): string {
   return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
 }
 
-/** Instrument rate from a plan's assumption list, defaulting when unstated. */
-export function rateFromAssumptions(assumptions: ReadonlyArray<Assumption>): number {
+/**
+ * Savings-leg rate the plan actually used: the goal spec's stated
+ * instrumentRatePa when present (a stated rate never gets an assumption chip,
+ * so reading the chip alone would silently re-default it), else the
+ * instrumentRatePa assumption chip, else the planner default. The goalSpec
+ * parameter is optional so existing callers keep compiling, but pass it
+ * whenever a spec is at hand or a user-stated rate will be replaced by the
+ * default and tracking will disagree with the plan it froze.
+ */
+export function rateFromAssumptions(
+  assumptions: ReadonlyArray<Assumption>,
+  goalSpec?: GoalSpec
+): number {
+  if (goalSpec !== undefined && goalSpec.kind === 'savings_target') {
+    const stated = goalSpec.instrumentRatePa;
+    if (stated !== undefined && Number.isFinite(stated)) {
+      return stated;
+    }
+  }
   const found = assumptions.find((entry) => entry.field === 'instrumentRatePa');
   return found !== undefined && Number.isFinite(found.value) ? found.value : PLANNER_DEFAULTS.instrumentRatePa;
 }
@@ -127,10 +161,48 @@ export function goalSlug(name: string): string {
   return slug.length > 0 ? slug : 'goal';
 }
 
-/** Planned balance after monthIndex months of saving at the required pace. */
+/**
+ * The investments leg captured at tracking start: a stated positive finite
+ * value, else 0 so pre-existing goals reproduce the single-leg arithmetic.
+ */
+function investmentsLeg(goal: TrackedGoal): number {
+  const value = goal.startInvestmentsSgd;
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Growth rate of the investments leg: a stated finite value, else the goal's
+ * ratePa (the stated savings rate actually used). Cash never borrows this rate
+ * and the investments leg never grows at anything else.
+ */
+function investmentsRate(goal: TrackedGoal): number {
+  const value = goal.investmentRatePa;
+  return value !== undefined && Number.isFinite(value) ? value : goal.ratePa;
+}
+
+/**
+ * The whole starting pot after the given whole months: liquid savings grown at
+ * ratePa plus the investments leg grown at its own rate. plannedBalance,
+ * actualBalance, the deadline projection and the per-contributor lines all
+ * start from this same two-leg pot so plan and progress can never disagree
+ * about which money grew at which rate. At month zero this is simply
+ * startSavingsSgd + investmentsLeg(goal).
+ */
+function grownPot(goal: TrackedGoal, months: number): number {
+  return (
+    fvLump(goal.startSavingsSgd, goal.ratePa, months / 12) +
+    fvLump(investmentsLeg(goal), investmentsRate(goal), months / 12)
+  );
+}
+
+/**
+ * Planned balance after monthIndex months of saving at the required pace: the
+ * two-leg starting pot grown at its own rates plus the required monthly cash
+ * saving compounded at ratePa.
+ */
 export function plannedBalance(goal: TrackedGoal, monthIndex: number): number {
   const months = Math.max(0, monthIndex);
-  return fvLump(goal.startSavingsSgd, goal.ratePa, months / 12) + fvAnnuity(goal.requiredMonthlySgd, goal.ratePa, months);
+  return grownPot(goal, months) + fvAnnuity(goal.requiredMonthlySgd, goal.ratePa, months);
 }
 
 /**
@@ -138,11 +210,12 @@ export function plannedBalance(goal: TrackedGoal, monthIndex: number): number {
  * every logged contribution grown from its own month to now. A log from
  * before tracking started counts as made at month zero (it is part of the pot
  * the goal began with); logs from after the queried month are ignored so the
- * figure is honest at any point on the timeline.
+ * figure is honest at any point on the timeline. Logs are cash saving, so they
+ * grow at ratePa; the frozen investments leg keeps growing at its own rate.
  */
 export function actualBalance(goal: TrackedGoal, monthIndex: number): number {
   const months = Math.max(0, monthIndex);
-  let balance = fvLump(goal.startSavingsSgd, goal.ratePa, months / 12);
+  let balance = grownPot(goal, months);
   for (const log of goal.logs) {
     const logMonth = Math.max(0, monthKeyDiff(goal.startMonthKey, log.monthKey));
     if (logMonth > months) {
@@ -190,11 +263,11 @@ export function paceStatus(goal: TrackedGoal, monthIndex: number): PaceStatus {
   return 'behind';
 }
 
-/** Balance the current average pace reaches by the deadline. */
+/** Balance the current average pace reaches by the deadline, both legs grown at their own rates. */
 export function projectedBalanceAtDeadline(goal: TrackedGoal, monthIndex: number): number {
   const totalMonths = Math.max(1, (goal.deadlineAge - goal.startAge) * 12);
   const pace = actualPace(goal, monthIndex);
-  return fvLump(goal.startSavingsSgd, goal.ratePa, totalMonths / 12) + fvAnnuity(pace, goal.ratePa, totalMonths);
+  return grownPot(goal, totalMonths) + fvAnnuity(pace, goal.ratePa, totalMonths);
 }
 
 /**
@@ -254,7 +327,9 @@ export function chartSeries(goal: TrackedGoal, monthIndex: number, maxPlannedPoi
     planned.push({ month: totalMonths, balance: plannedBalance(goal, totalMonths) });
   }
   const elapsed = Math.max(0, monthIndex);
-  const actual: Array<{ month: number; balance: number }> = [{ month: 0, balance: goal.startSavingsSgd }];
+  const actual: Array<{ month: number; balance: number }> = [
+    { month: 0, balance: grownPot(goal, 0) },
+  ];
   for (let month = 1; month <= elapsed; month += 1) {
     actual.push({ month, balance: actualBalance(goal, month) });
   }
@@ -308,11 +383,11 @@ export interface ContributorChartSeries {
 }
 
 /**
- * Balance of one contributor's line at monthIndex: the whole starting pot
- * grown at the plan's rate, plus only that contributor's logged contributions
- * each grown from its own month to now. Window rules match actualBalance:
- * pre-start logs count at month zero, logs after the queried month are
- * ignored, contributor-less logs belong to 'you'.
+ * Balance of one contributor's line at monthIndex: the whole two-leg starting
+ * pot grown at its own rates, plus only that contributor's logged cash
+ * contributions each grown from its own month to now at ratePa. Window rules
+ * match actualBalance: pre-start logs count at month zero, logs after the
+ * queried month are ignored, contributor-less logs belong to 'you'.
  */
 function contributorBalance(
   goal: TrackedGoal,
@@ -320,7 +395,7 @@ function contributorBalance(
   monthIndex: number
 ): number {
   const months = Math.max(0, monthIndex);
-  let balance = fvLump(goal.startSavingsSgd, goal.ratePa, months / 12);
+  let balance = grownPot(goal, months);
   for (const log of goal.logs) {
     const isPartner = log.contributor === 'partner';
     if (isPartner !== (contributor === 'partner')) {
@@ -338,16 +413,17 @@ function contributorBalance(
 /**
  * Per-contributor actual lines for the chart, honest by construction.
  *
- * Semantics: BOTH series start from the same starting pot. Each line at month
- * m is contributorBalance = fvLump(startSavingsSgd, ratePa, m / 12) plus that
- * contributor's in-window logs each grown from its own month to m. So each
- * line reads as "the whole pot as if this person alone had been contributing
- * alongside the shared pot", and the identity
- * you[m] + partner[m] - fvLump(startSavingsSgd, ratePa, m / 12)
+ * Semantics: BOTH series start from the same two-leg starting pot (cash at
+ * ratePa plus investments at their own rate). Each line at month m is
+ * contributorBalance = grownPot(goal, m) plus that contributor's in-window
+ * logs each grown from its own month to m at ratePa. So each line reads as
+ * "the whole pot as if this person alone had been contributing alongside the
+ * shared pot", and the identity
+ * you[m] + partner[m] - grownPot(goal, m)
  * = actualBalance(goal, m) holds exactly at every sampled month: the two lines
  * double-count the pot once, and every log belongs to exactly one line. Label
  * the lines "pot + you" and "pot + partner", never "you's balance" alone.
- * At a zero rate the subtracted pot is startSavingsSgd itself.
+ * At a zero rate the subtracted pot is startSavingsSgd + investmentsLeg itself.
  *
  * Sampling: points at months 0, step, 2 * step, ... up to the elapsed month,
  * where step = max(1, ceil((elapsed + 1) / maxPlannedPoints)) so each array
@@ -447,4 +523,40 @@ export function removeGoal(
 ): TrackedGoal[] {
   const where = space ?? 'you';
   return goals.filter((goal) => !(goal.id === id && (goal.space ?? 'you') === where));
+}
+
+/**
+ * Fresh id for a goal about to be tracked into a space: the desired slug when
+ * that space does not hold it yet, otherwise the slug with a numeric suffix
+ * (-2, -3, ...) up to the first free candidate. Scoping matches sameGoal,
+ * id plus space with absent space meaning 'you', so the same slug tracked in
+ * another space never forces a suffix. Because the returned id differs from
+ * every stored goal in that space, appending the new goal can never collide
+ * with an existing sameGoal match, so re-tracking never silently re-baselines
+ * the history already logged against the earlier goal.
+ *
+ * Migration-free and backward compatible: stored ids are never rewritten, and
+ * the first goal of any name still gets the bare slug goalSlug would produce.
+ * Formula: let taken = { goal.id : goal in goals where (goal.space ?? 'you')
+ * = (space ?? 'you') }; return desiredId when desiredId is not in taken, else
+ * the first desiredId-n (n = 2, 3, ...) not in taken.
+ */
+export function uniqueGoalId(
+  goals: ReadonlyArray<TrackedGoal>,
+  desiredId: string,
+  space?: 'you' | 'partner' | 'us'
+): string {
+  const where = space ?? 'you';
+  const taken = new Set(
+    goals.filter((goal) => (goal.space ?? 'you') === where).map((goal) => goal.id)
+  );
+  if (!taken.has(desiredId)) {
+    return desiredId;
+  }
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${desiredId}-${suffix}`;
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+  }
 }

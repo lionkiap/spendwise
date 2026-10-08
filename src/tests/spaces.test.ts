@@ -271,6 +271,33 @@ describe('chartSeriesByContributor', () => {
     expect(actualBalance(goal, 3)).toBeCloseTo(6_829.44232, 4);
     expect(youLast!.balance + partnerLast!.balance - pot).toBeCloseTo(6_829.44232, 4);
   });
+
+  it('keeps the identity when the pot spans two legs at two rates', () => {
+    const goal = makeGoal({
+      ratePa: 0.018,
+      startSavingsSgd: 5_000,
+      startInvestmentsSgd: 7_000,
+      investmentRatePa: 0.05,
+      logs: [
+        { monthKey: '2026-01', contributedSgd: 1_000, contributor: 'you' },
+        { monthKey: '2026-02', contributedSgd: 800, contributor: 'partner' },
+      ],
+    });
+    const series = chartSeriesByContributor(goal, 3);
+    const youLast = series.you[series.you.length - 1];
+    const partnerLast = series.partner[series.partner.length - 1];
+    // The pot both lines double-count is the two-leg pot: cash at 1.8 percent
+    // plus investments at their own 5 percent, never cash at 5 or mixtures.
+    const pot = fvLump(5_000, 0.018, 3 / 12) + fvLump(7_000, 0.05, 3 / 12);
+    expect(Math.abs(youLast!.balance + partnerLast!.balance - pot - actualBalance(goal, 3))).toBeLessThanOrEqual(1e-8);
+    // Hand check: pot = 5,022.533767 + 7,087.865090 = 12,110.398857; your 1,000
+    // grows to 1,004.506753 and partner's 800 to 802.401800, so the combined
+    // actual is 13,917.307410.
+    expect(actualBalance(goal, 3)).toBeCloseTo(13_917.307410, 4);
+    // Each line is the whole pot plus only that contributor's grown logs.
+    expect(youLast!.balance).toBeCloseTo(pot + 1_004.506753375, 6);
+    expect(partnerLast!.balance).toBeCloseTo(pot + 802.4018, 4);
+  });
 });
 
 describe('contributor-less logs and us-space goals', () => {

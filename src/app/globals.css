@@ -655,6 +655,45 @@ textarea {
   margin-top: 2px;
 }
 
+.takehome-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.takehome-edit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.takehome-edit-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.takehome-edit input {
+  width: 110px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 0.85rem;
+  padding: 5px 9px;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.takehome-edit input:focus {
+  outline: none;
+  border-color: var(--forest);
+  box-shadow: var(--focus-ring);
+}
+
 .engine-badge {
   display: inline-flex;
   align-items: center;
@@ -2720,4 +2759,349 @@ textarea {
 .journey-intro .action-list li {
   line-height: 1.65;
   margin-bottom: var(--space-1);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Adviser tab: space chip, five-point transcript, op cards, apply/undo    */
+/* ---------------------------------------------------------------------- */
+
+.adviser-space-row {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.adviser-space-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.adviser-log {
+  border-top: 1px solid var(--rule);
+}
+
+.adviser-points {
+  margin: var(--space-2) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adviser-point {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--rule-soft);
+  padding-bottom: 6px;
+}
+
+.adviser-point:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.adviser-point dt {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 3px;
+}
+
+.adviser-point dd {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.needs-data-pill {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* Op result card: the framed block under the five points. */
+
+.adviser-op-card {
+  margin-top: var(--space-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper-deep);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.adviser-card-head {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.adviser-proposal-table {
+  width: 100%;
+}
+
+.adviser-honesty-line {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  border-left: 3px solid var(--ochre);
+  padding-left: 10px;
+}
+
+.shared-pot-warning {
+  border-left-color: var(--brick);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Protected categories editor. */
+
+.adviser-protected {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--rule-soft);
+  padding-top: var(--space-2);
+}
+
+.adviser-protected-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.protected-chip-row {
+  gap: 6px;
+}
+
+.protected-chip {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  padding: 3px 11px;
+  cursor: pointer;
+  transition: border-color 140ms ease-out, background 140ms ease-out, color 140ms ease-out;
+}
+
+.protected-chip:hover {
+  border-color: var(--forest);
+}
+
+.protected-chip-on {
+  border-color: var(--forest);
+  background: var(--leaf-soft);
+  color: var(--forest);
+  font-weight: 700;
+}
+
+/* Preview badge and before-and-after card. */
+
+.adviser-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.preview-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ochre);
+  border-radius: 4px;
+  background: var(--ochre-soft);
+  color: var(--ink);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+}
+
+.adviser-before-after {
+  margin-top: 0;
+}
+
+/* Reviewable action row, adjust input, panels and confirmation. */
+
+.adviser-card-actions {
+  border-top: 1px solid var(--rule-soft);
+  padding-top: var(--space-2);
+  align-items: center;
+}
+
+.adviser-adjust {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.adviser-adjust input {
+  width: 96px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 0.85rem;
+  padding: 5px 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.adviser-adjust input:focus {
+  outline: none;
+  border-color: var(--forest);
+  box-shadow: var(--focus-ring);
+}
+
+.adviser-apply-blocked {
+  font-size: 0.75rem;
+}
+
+.adviser-preview-panel {
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: var(--space-3);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adviser-preview-panel p {
+  margin: 0;
+}
+
+.adviser-confirm {
+  width: 100%;
+  border: 1px solid var(--forest);
+  border-radius: var(--radius-sm);
+  background: var(--leaf-soft);
+  padding: var(--space-3);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adviser-confirm p {
+  margin: 0;
+}
+
+/* Undo banner. */
+
+.undo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  border: 1px solid var(--forest);
+  border-left: 6px solid var(--forest);
+  border-radius: var(--radius-sm);
+  background: var(--leaf-soft);
+  color: var(--ink);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  padding: 10px 14px;
+  margin: var(--space-2) 0;
+}
+
+.adviser-form-row {
+  margin-top: var(--space-3);
+}
+
+/* Narrow screens: single column, stacked input row, compact point grid. */
+
+@media (max-width: 600px) {
+  .adviser-point {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .adviser-point dt {
+    padding-top: 0;
+  }
+
+  .adviser-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .adviser-form-row .btn {
+    width: 100%;
+  }
+
+  .adviser-card-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .adviser-card-actions .btn {
+    width: 100%;
+  }
+
+  .adviser-adjust {
+    width: 100%;
+  }
+
+  .adviser-adjust input {
+    flex: 1;
+    width: auto;
+  }
+
+  .adviser-adjust .btn,
+  .adviser-confirm .btn {
+    width: 100%;
+  }
+
+  .adviser-confirm .adviser-actions,
+  .undo-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 375px) {
+  .adviser-op-card,
+  .adviser-preview-panel,
+  .adviser-confirm {
+    padding: var(--space-2);
+  }
+
+  .adviser-before-after {
+    grid-template-columns: 1fr;
+  }
+
+  .protected-chip {
+    font-size: 0.68rem;
+    padding: 2px 9px;
+  }
+}
+
+/* Mobile: the four tabs and the space switcher wrap instead of overflowing,
+   and wide adviser tables scroll inside their own box. */
+@media (max-width: 600px) {
+  .tabs {
+    flex-wrap: wrap;
+  }
+
+  #panel-adviser table {
+    display: block;
+    overflow-x: auto;
+  }
 }

@@ -11,8 +11,16 @@
 import { CARDS } from '../../lib/data/cards';
 import type { CardSpec, ExpenseCategory, LedgerEntry } from '../../lib/cards/types';
 import { parseCustomCard } from '../../lib/cards/custom';
+import { goalImpactWithExtra } from '../../lib/adviser/ops';
 import { buildPlan, type PlanJSON, type VerdictStatus } from '../../lib/planner/build';
-import { combineProfiles, goalSpecSchema, type GoalSpec, type UserProfile } from '../../lib/planner/goalspec';
+import {
+  PLANNER_DEFAULTS,
+  combineProfiles,
+  goalSpecSchema,
+  type Assumption,
+  type GoalSpec,
+  type UserProfile,
+} from '../../lib/planner/goalspec';
 import { fillAssumptions } from '../../lib/planner/parse';
 import {
   goalNameFromSpec,
@@ -85,7 +93,7 @@ export function spaceLabel(space: SpaceId): string {
 }
 
 export type PlanParser = 'nemotron' | 'local-fallback';
-export type TabId = 'planner' | 'progress' | 'cards';
+export type TabId = 'planner' | 'progress' | 'adviser' | 'cards';
 
 export const MILES_VALUATION_MIN = 1.4;
 export const MILES_VALUATION_MAX = 2.4;
@@ -242,6 +250,42 @@ export function assumptionLabel(field: string): string {
 
 export function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Space epoch: race guard for async requests scoped to a space           */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Race guard for space-scoped async work. handlePlan captures the space epoch
+ * before awaiting fetch; when the reply lands it applies the result only when
+ * epochMatches still holds, so a plan computed against one space's profile can
+ * never render after the user switched to another space. Pure by construction:
+ * it is a plain equality test, extracted so the guard itself is testable.
+ * Formula: matches = (captured = current).
+ */
+export function epochMatches(captured: number, current: number): boolean {
+  return captured === current;
+}
+
+/**
+ * Growth rate of the investments leg the plan actually used, frozen the same
+ * way buildPlan resolves it: the profile's stated rate when present, else the
+ * investmentRatePa assumption chip, else the planner default. Mirrors
+ * savingsCore in src/lib/planner/build.ts so a tracked goal's frozen
+ * investment rate can never drift from the plan it was frozen from.
+ */
+export function investmentRateFromPlan(
+  profile: UserProfile,
+  assumptions: ReadonlyArray<Assumption>
+): number {
+  if (profile.investmentRatePa !== undefined && Number.isFinite(profile.investmentRatePa)) {
+    return profile.investmentRatePa;
+  }
+  const found = assumptions.find((entry) => entry.field === 'investmentRatePa');
+  return found !== undefined && Number.isFinite(found.value)
+    ? found.value
+    : PLANNER_DEFAULTS.investmentRatePa;
 }
 
 export function numberFrom(raw: string): number {
@@ -714,6 +758,14 @@ export function parseBackup(raw: string): BackupParseResult {
       );
     } else if (key === PROFILE_YOU_KEY || key === PROFILE_PARTNER_KEY) {
       outcome = validateProfile(key, value);
+    } else if (
+      key === ADVISER_PREFS_YOU_KEY ||
+      key === ADVISER_PREFS_PARTNER_KEY ||
+      key === ADVISER_PREFS_US_KEY
+    ) {
+      outcome = isAdviserPrefsPayload(value)
+        ? { key, value }
+        : { key, reason: 'not an adviser preferences payload' };
     } else if (key === SPACE_ACTIVE_KEY) {
       outcome =
         value === 'you' || value === 'partner' || value === 'us'
@@ -854,6 +906,273 @@ export function isAdvisorReply(value: unknown): value is AdvisorReply {
     );
   }
   return false;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Adviser tab: per-space preferences, wire guard, preview and apply/undo  */
+/* pure helpers. Previews compute figures only; nothing here writes       */
+/* storage, so a preview can never mutate saved data.                    */
+/* ---------------------------------------------------------------------- */
+
+export const ADVISER_PREFS_YOU_KEY = 'sw_adviser_prefs_you';
+export const ADVISER_PREFS_PARTNER_KEY = 'sw_adviser_prefs_partner';
+export const ADVISER_PREFS_US_KEY = 'sw_adviser_prefs_us';
+
+/** Key holding a space's adviser preferences (protectedCategories). */
+export function adviserPrefsKeyFor(space: SpaceId): string {
+  if (space === 'you') {
+    return ADVISER_PREFS_YOU_KEY;
+  }
+  return space === 'partner' ? ADVISER_PREFS_PARTNER_KEY : ADVISER_PREFS_US_KEY;
+}
+
+/** Serialize one space's protected categories for storage. */
+export function serializeAdviserPrefs(protectedCategories: ReadonlyArray<ExpenseCategory>): string {
+  return JSON.stringify({ protectedCategories: [...protectedCategories] });
+}
+
+/**
+ * Read a space's protected categories back from storage. Anything that is
+ * not valid JSON, not the { protectedCategories: [...] } shape, or holds
+ * unknown or duplicated categories collapses to a clean list: valid entries
+ * keep their stored order, invalid and repeat entries are dropped.
+ */
+export function parseAdviserPrefs(raw: string | null): ExpenseCategory[] {
+  if (raw === null) {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return [];
+  }
+  const list = (parsed as { protectedCategories?: unknown }).protectedCategories;
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  const valid = new Set(CATEGORIES.map((entry) => entry.value));
+  const out: ExpenseCategory[] = [];
+  for (const entry of list) {
+    if (typeof entry === 'string' && valid.has(entry as ExpenseCategory) && !out.includes(entry as ExpenseCategory)) {
+      out.push(entry as ExpenseCategory);
+    }
+  }
+  return out;
+}
+
+/** Backup validation: the payload must be a prefs object whose every entry is a known category. */
+export function isAdviserPrefsPayload(raw: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return false;
+  }
+  const list = (parsed as { protectedCategories?: unknown }).protectedCategories;
+  if (!Array.isArray(list)) {
+    return false;
+  }
+  const valid = new Set(CATEGORIES.map((entry) => entry.value));
+  return list.every((entry) => typeof entry === 'string' && valid.has(entry as ExpenseCategory));
+}
+
+/** Pure toggle: remove the category when protected, add it when not. */
+export function toggleProtectedCategory(
+  categories: ReadonlyArray<ExpenseCategory>,
+  category: ExpenseCategory
+): ExpenseCategory[] {
+  return categories.includes(category)
+    ? categories.filter((entry) => entry !== category)
+    : [...categories, category];
+}
+
+/** Ledger coverage for the adviser context: record counts per month, ascending. */
+export function summarizeLedgerMonths(
+  ledger: ReadonlyArray<LedgerRow>
+): Array<{ monthKey: string; recordCount: number }> {
+  const counts = new Map<string, number>();
+  for (const row of ledger) {
+    counts.set(row.monthKey, (counts.get(row.monthKey) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([monthKey, recordCount]) => ({ monthKey, recordCount }))
+    .sort((a, b) => (a.monthKey < b.monthKey ? -1 : a.monthKey > b.monthKey ? 1 : 0));
+}
+
+/* Wire types mirroring POST /api/adviser/chat replies. */
+
+/** One reduce proposal as the route returns it. */
+export interface AdviserReduceProposalWire {
+  category: ExpenseCategory;
+  monthTotal: number;
+  proposedCut: number;
+  freedMonthly: number;
+}
+
+/** Structured op detail the cards render beyond the five points. */
+export type AdviserChatDetail =
+  | {
+      kind: 'reduce';
+      monthKey: string;
+      freedMonthly: number;
+      proposals: AdviserReduceProposalWire[];
+      /** Present when the user named one category; drives the Adjust label. */
+      namedCategory?: ExpenseCategory;
+    }
+  | {
+      kind: 'one_off';
+      goalId: string;
+      goalName: string;
+      amountSgd: number;
+      potBefore: number;
+      potAfter: number;
+      monthsBefore: number | null;
+      monthsAfter: number | null;
+      sharedPotWarning: boolean;
+      goalsInSpaceCount: number;
+    }
+  | {
+      kind: 'what_if';
+      goalId: string;
+      goalName: string;
+      revisedGoalSpec: GoalSpec;
+      revisedProfile: UserProfile;
+      savingsBefore: number;
+      savingsAfter: number;
+      /** Which field of the plan the patch touches; 'price' covers every price flavour. */
+      patchKind: 'deadlineAge' | 'incomeGap' | 'price';
+    };
+
+/** Shape of a /api/adviser/chat reply, mirroring the route contract. */
+export interface AdviserChatReply {
+  reply: string;
+  points: Array<{ label: string; body: string }>;
+  action?: { type: 'protect_category'; category: ExpenseCategory };
+  detail?: AdviserChatDetail;
+  op: string;
+  engine: 'model' | 'fallback';
+  meta: { modelCallsUsed: number; budgetRemaining: number };
+}
+
+/** Guard for /api/adviser/chat payloads read back from fetch. */
+export function isAdviserChatReply(value: unknown): value is AdviserChatReply {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const reply = value as Record<string, unknown>;
+  const meta = reply.meta;
+  const metaRecord = meta === null || typeof meta !== 'object' ? null : (meta as Record<string, unknown>);
+  return (
+    typeof reply.reply === 'string' &&
+    reply.reply.length > 0 &&
+    Array.isArray(reply.points) &&
+    reply.points.every(
+      (point) =>
+        point !== null &&
+        typeof point === 'object' &&
+        typeof (point as Record<string, unknown>).label === 'string' &&
+        typeof (point as Record<string, unknown>).body === 'string'
+    ) &&
+    typeof reply.op === 'string' &&
+    (reply.engine === 'model' || reply.engine === 'fallback') &&
+    metaRecord !== null &&
+    typeof metaRecord.modelCallsUsed === 'number' &&
+    Number.isFinite(metaRecord.modelCallsUsed) &&
+    typeof metaRecord.budgetRemaining === 'number' &&
+    Number.isFinite(metaRecord.budgetRemaining)
+  );
+}
+
+/* Preview and apply/undo: pure helpers the tab and the tests share. */
+
+/** Effect figures of redirecting freed monthly cash into a tracked goal. */
+export interface AdviserPreviewFigures {
+  monthsBefore: number | null;
+  monthsAfter: number | null;
+  finishAgeBefore: number | null;
+  finishAgeAfter: number | null;
+}
+
+/**
+ * Preview a reduce proposal against one tracked goal. Pure: it only reads the
+ * goal and returns goalImpactWithExtra's figures, touching no storage, no
+ * forms and no goals, so a preview can never mutate saved data.
+ */
+export function previewReduceEffect(
+  goal: TrackedGoal,
+  freedMonthlySgd: number
+): AdviserPreviewFigures {
+  return goalImpactWithExtra(goal, freedMonthlySgd);
+}
+
+/**
+ * The pre-apply snapshot for one space's Undo: both personal profile forms
+ * and every tracked goal, deep copied (the shapes are JSON-safe) so later
+ * edits can never leak into the snapshot. Kept in memory one deep per space.
+ */
+export interface AdviserUndoSnapshot {
+  profileForms: Record<PersonSpace, ProfileFormState>;
+  goals: TrackedGoal[];
+}
+
+export function buildUndoSnapshot(
+  profileForms: Record<PersonSpace, ProfileFormState>,
+  goals: ReadonlyArray<TrackedGoal>
+): AdviserUndoSnapshot {
+  return JSON.parse(JSON.stringify({ profileForms, goals })) as AdviserUndoSnapshot;
+}
+
+/** Byte-identical comparison of two snapshots, the invariant Undo restores. */
+export function snapshotsEqual(a: AdviserUndoSnapshot, b: AdviserUndoSnapshot): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Apply a goal-level revision to one tracked goal, scoped by id AND space
+ * (sameGoal semantics: the same slug in another space is a different goal).
+ * The goal keeps its id, space and every savings log; only goalSpec,
+ * deadlineAge and the display name move to the revision.
+ */
+export function applyAdviserGoalRevision(
+  goals: ReadonlyArray<TrackedGoal>,
+  goalId: string,
+  space: SpaceId,
+  revisedGoalSpec: GoalSpec
+): TrackedGoal[] {
+  return goals.map((goal) =>
+    goal.id === goalId && (goal.space ?? 'you') === space
+      ? {
+          ...goal,
+          goalSpec: revisedGoalSpec,
+          deadlineAge: revisedGoalSpec.deadlineAge,
+          name: goalNameFromSpec(revisedGoalSpec),
+        }
+      : goal
+  );
+}
+
+/** A profile-level plan setting an adviser proposal can update. */
+export type AdviserProfileField = 'monthlyExpenses' | 'liquidSavings';
+
+/**
+ * Apply a profile-level adjustment to one person's form, immutably: the next
+ * value is clamped at zero and formatted as a plain string. Nothing is
+ * rounded silently beyond cents.
+ */
+export function applyAdviserProfileAdjustment(
+  form: ProfileFormState,
+  field: AdviserProfileField,
+  nextValue: number
+): ProfileFormState {
+  const clamped = Math.max(0, Math.round(nextValue * 100) / 100);
+  return { ...form, [field]: String(clamped) };
 }
 
 /* ---------------------------------------------------------------------- */
